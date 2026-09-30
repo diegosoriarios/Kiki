@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">Kiki</string>
+
+    <string name="notification_channel_downloads">Downloads</string>
+    <string name="notification_downloading_title">Downloading…</string>
+    <string name="notification_download_done">Download complete</string>
+    <string name="notification_download_failed">Download failed</string>
+</resources>
