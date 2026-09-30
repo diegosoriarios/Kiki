@@ -131,9 +131,6 @@ Required repository secrets:
 Please respect copyright and the terms of service of the sites you use Kiki with.
 Download content you have the right to keep.
 
-## Status
-
-Development log and verification checklist live in [PLAN.md](PLAN.md).
 
 ## Licence
 
