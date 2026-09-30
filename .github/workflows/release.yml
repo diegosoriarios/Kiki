@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (leave blank to auto-generate from versionName)"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 -d > kiki-release.jks
+
+      - name: Write keystore.properties
+        env:
+          KIKI_STORE_PASSWORD: ${{ secrets.KIKI_STORE_PASSWORD }}
+          KIKI_KEY_ALIAS: ${{ secrets.KIKI_KEY_ALIAS }}
+          KIKI_KEY_PASSWORD: ${{ secrets.KIKI_KEY_PASSWORD }}
+        run: |
+          cat > keystore.properties <<EOF
+          storeFile=kiki-release.jks
+          storePassword=$KIKI_STORE_PASSWORD
+          keyAlias=$KIKI_KEY_ALIAS
+          keyPassword=$KIKI_KEY_PASSWORD
+          EOF
+
+      - name: Build signed release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Resolve version and tag
+        id: meta
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_TAG: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          VERSION=$(grep -o 'versionName = "[^"]*"' app/build.gradle.kts | cut -d'"' -f2)
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [ "$EVENT" = "push" ]; then
+            TAG="$REF_TAG"
+          else
+            TAG="v$VERSION-build.$GITHUB_RUN_NUMBER"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Rename APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/release/*.apk "dist/Kiki-${{ steps.meta.outputs.version }}.apk"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Kiki ${{ steps.meta.outputs.version }}
+          files: dist/*.apk
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
