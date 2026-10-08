@@ -25,5 +25,13 @@ data class DownloadRecord(
     val status: DownloadStatus = DownloadStatus.QUEUED,
     val downloadType: String = "DIRECT",
     val createdAt: Long = System.currentTimeMillis(),
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /** Remote poster URL captured at enqueue time (shown while downloading). */
+    val thumbnailUrl: String? = null,
+    /** Local frame extracted from the finished file (shown once completed). */
+    val thumbnailPath: String? = null,
+    /** Quality badge captured at enqueue time, e.g. "1080p · 4.5 Mbps". */
+    val qualityLabel: String? = null,
+    /** Host the media came from, e.g. "video.acme.com". */
+    val sourceHost: String? = null
 )

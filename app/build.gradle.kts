@@ -73,6 +73,7 @@ dependencies {
     implementation(libs.ffmpeg.kit.https)
     implementation(libs.androidx.biometric)
     implementation(libs.androidx.security.crypto)
+    implementation(libs.coil.compose)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)

@@ -40,12 +40,17 @@ class SegmentCandidateRegistry {
         val segmentCount: Int
     )
 
+    /**
+     * One directly-savable media URL (e.g. an .mp4 episode). Each distinct URL
+     * gets its own row — no pattern collapsing — so tapping a row always saves
+     * exactly that file. Ordered newest-first by [lastSeenAt].
+     */
     data class MediaGroup(
+        val url: String,
         val host: String,
-        val pattern: String,
         val requestCount: Int,
-        val sampleUrl: String,
-        val kind: String // MediaTypes.VIDEO / AUDIO
+        val kind: String, // MediaTypes.VIDEO / AUDIO
+        val lastSeenAt: Long
     )
 
     data class SegmentGroup(
@@ -73,10 +78,20 @@ class SegmentCandidateRegistry {
         val count = AtomicInteger(1)
     }
 
+    /** One observed direct-media URL, mutable for request count + recency. */
+    private class MutableMediaEntry(
+        val url: String,
+        val host: String,
+        val kind: String
+    ) {
+        val count = AtomicInteger(1)
+        @Volatile var lastSeenAt: Long = System.currentTimeMillis()
+    }
+
     private val tabPlaylists =
         ConcurrentHashMap<String, CopyOnWriteArrayList<PlaylistCapture>>()
-    private val tabMediaGroups =
-        ConcurrentHashMap<String, ConcurrentHashMap<String, MutableGroup>>()
+    private val tabMediaEntries =
+        ConcurrentHashMap<String, ConcurrentHashMap<String, MutableMediaEntry>>()
     private val tabSegmentGroups =
         ConcurrentHashMap<String, ConcurrentHashMap<String, MutableGroup>>()
 
@@ -98,12 +113,22 @@ class SegmentCandidateRegistry {
 
         val mediaKind = classifyDirectMedia(path)
         if (mediaKind != null) {
-            val groups = tabMediaGroups.getOrPut(tabId) { ConcurrentHashMap() }
-            val wasEmpty = groups.isEmpty()
-            val group = groups.getOrPut(groupKey(host, path)) {
-                MutableGroup(host, normalizePattern(path), url)
+            val entries = tabMediaEntries.getOrPut(tabId) { ConcurrentHashMap() }
+            val wasEmpty = entries.isEmpty()
+            val existing = entries[url]
+            if (existing != null) {
+                existing.lastSeenAt = System.currentTimeMillis()
+                existing.count.incrementAndGet()
+            } else {
+                synchronized(entries) {
+                    // Keep the newest URLs visible when a page emits many files
+                    if (entries.size >= MAX_MEDIA_PER_TAB) {
+                        val oldest = entries.entries.minByOrNull { it.value.lastSeenAt }
+                        if (oldest != null) entries.remove(oldest.key)
+                    }
+                    entries[url] = MutableMediaEntry(url, host, mediaKind)
+                }
             }
-            if (group.count.incrementAndGet() > MAX_COUNT_PER_GROUP) group.count.decrementAndGet()
             if (wasEmpty) onGroupsChanged?.invoke(tabId, true)
             return
         }
@@ -140,16 +165,15 @@ class SegmentCandidateRegistry {
 
     fun captureFor(tabId: String): TabMediaCapture {
         val playlists = tabPlaylists[tabId]?.toList() ?: emptyList()
-        val media = tabMediaGroups[tabId]?.values?.map { group ->
+        val media = tabMediaEntries[tabId]?.values?.map { entry ->
             MediaGroup(
-                host = group.host,
-                pattern = group.pattern,
-                requestCount = group.count.get(),
-                sampleUrl = group.sampleUrl,
-                kind = classifyDirectMedia((Uri.parse(group.sampleUrl).path ?: "").lowercase())
-                    ?: MediaTypes.VIDEO
+                url = entry.url,
+                host = entry.host,
+                requestCount = entry.count.get(),
+                kind = entry.kind,
+                lastSeenAt = entry.lastSeenAt
             )
-        }?.sortedByDescending { it.requestCount } ?: emptyList()
+        }?.sortedByDescending { it.lastSeenAt } ?: emptyList()
         val segments = tabSegmentGroups[tabId]?.values?.map { group ->
             SegmentGroup(
                 host = group.host,
@@ -178,7 +202,7 @@ class SegmentCandidateRegistry {
 
     fun clear(tabId: String) {
         val removed = tabPlaylists.remove(tabId) != null ||
-                tabMediaGroups.remove(tabId) != null ||
+                tabMediaEntries.remove(tabId) != null ||
                 tabSegmentGroups.remove(tabId) != null
         if (removed) {
             onGroupsChanged?.invoke(tabId, false)
@@ -188,10 +212,10 @@ class SegmentCandidateRegistry {
     fun clearAll() {
         val tabs = mutableSetOf<String>()
         tabs += tabPlaylists.keys
-        tabs += tabMediaGroups.keys
+        tabs += tabMediaEntries.keys
         tabs += tabSegmentGroups.keys
         tabPlaylists.clear()
-        tabMediaGroups.clear()
+        tabMediaEntries.clear()
         tabSegmentGroups.clear()
         tabs.forEach { onGroupsChanged?.invoke(it, false) }
     }
@@ -250,6 +274,9 @@ class SegmentCandidateRegistry {
         private const val MAX_PATTERN_LENGTH = 160
         private const val MAX_COUNT_PER_GROUP = 9999
         private const val MAX_PLAYLISTS_PER_TAB = 12
+
+        /** Distinct direct-media URLs tracked per tab before oldest eviction. */
+        private const val MAX_MEDIA_PER_TAB = 30
     }
 }
 

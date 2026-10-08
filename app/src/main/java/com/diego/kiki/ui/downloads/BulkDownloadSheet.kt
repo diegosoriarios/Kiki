@@ -29,6 +29,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.diego.kiki.download.BulkItem
+import com.diego.kiki.download.MediaNaming
 import com.diego.kiki.download.MediaTypes
 
 /**
@@ -95,12 +96,17 @@ fun BulkDownloadSheet(
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = MediaTypes.label(item.type),
+                            text = item.label,
                             style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = item.url,
+                            text = listOfNotNull(
+                                MediaTypes.label(item.type),
+                                MediaNaming.shortHost(item.url).takeIf { it.isNotBlank() }
+                            ).joinToString(" · "),
                             style = MaterialTheme.typography.bodySmall,
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,

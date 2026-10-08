@@ -47,7 +47,7 @@ import kotlin.math.atan2
 import kotlin.math.hypot
 
 /**
- * Full-size overlay over the WebView: two draggable pins (A = start, B = end)
+ * Full-size overlay over the WebView: two draggable pins (S = start, E = end)
  * define the swipe the auto-scroller will replay. Coordinates are stored as
  * fractions of this overlay's size (which matches the WebView) so replays land
  * in place even after rotation.
@@ -130,7 +130,7 @@ fun GesturePinOverlay(
                     drawPath(head, color = lineColor)
                 }
 
-                listOf(a to "A", b to "B").forEach { (pos, label) ->
+                listOf(a to "S", b to "E").forEach { (pos, label) ->
                     drawCircle(color = pinFill, radius = 34f, center = pos)
                     drawCircle(
                         color = pinLabel,
@@ -158,7 +158,7 @@ fun GesturePinOverlay(
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
             ) {
                 Text(
-                    text = "Drag pin A (start) and pin B (end) to set the swipe,\nthen start — the app will repeat it automatically",
+                    text = "Drag pin S (start) and pin E (end) to set the swipe,\nthen start — the app will repeat it automatically",
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurface,

@@ -30,28 +30,6 @@ class MainActivity : FragmentActivity() {
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
-    /**
-     * MediaProjection consent uses a direct startActivityForResult with an
-     * explicit request code: FragmentActivity rejects the >16-bit codes the
-     * ActivityResultRegistry generates ("Can only use lower 16 bits").
-     */
-    private companion object {
-        const val SCREEN_RECORD_REQUEST = 4242
-    }
-
-    /** Launches the system MediaProjection consent dialog. */
-    fun launchScreenRecordConsent() {
-        val manager = getSystemService(android.media.projection.MediaProjectionManager::class.java)
-        startActivityForResult(manager.createScreenCaptureIntent(), SCREEN_RECORD_REQUEST)
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == SCREEN_RECORD_REQUEST && resultCode == RESULT_OK && data != null) {
-            com.diego.kiki.screenrec.RecordingService.start(this, resultCode, data)
-        }
-    }
-
     private val lifecycleObserver = object : DefaultLifecycleObserver {
         override fun onResume(owner: LifecycleOwner) {
             viewModel.onAppForeground()
@@ -59,6 +37,14 @@ class MainActivity : FragmentActivity() {
 
         override fun onPause(owner: LifecycleOwner) {
             viewModel.onAppBackground()
+        }
+
+        override fun onStop(owner: LifecycleOwner) {
+            // Page recording only captures while Kiki is visible — finalize it
+            // when the app leaves the foreground (rotation keeps running)
+            if (!isChangingConfigurations) {
+                com.diego.kiki.screenrec.ScreenRecorder.stopIfRecording()
+            }
         }
     }
 

@@ -25,7 +25,14 @@ object MediaTypes {
 data class MediaCandidate(
     val url: String,
     val type: String,
-    val sourceTag: String = ""
+    val sourceTag: String = "",
+    /** Poster image URL for <video> elements, when the page provides one. */
+    val posterUrl: String? = null,
+    /** Intrinsic video dimensions reported by the DOM (0 = unknown). */
+    val width: Int = 0,
+    val height: Int = 0,
+    /** Last time this URL was observed — drives newest-first ordering. */
+    val lastSeenAt: Long = 0L
 )
 
 /** One row in the bulk-download checklist. */
@@ -33,4 +40,11 @@ data class BulkItem(
     val url: String,
     val label: String,
     val type: String // MediaTypes.* (HLS, VIDEO, AUDIO, BLOB, ...)
+)
+
+/** Parsed quality info for one HLS variant playlist (from its master). */
+data class VariantQuality(
+    val url: String,
+    val bandwidth: Long,
+    val resolution: String? = null
 )

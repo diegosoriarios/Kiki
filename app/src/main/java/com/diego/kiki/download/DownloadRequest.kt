@@ -6,7 +6,13 @@ data class DownloadRequest(
     val url: String,
     val headers: Map<String, String> = emptyMap(),
     val fileName: String,
-    val mimeType: String? = null
+    val mimeType: String? = null,
+    /** Remote poster captured at enqueue time (shown while downloading). */
+    val thumbnailUrl: String? = null,
+    /** Quality badge captured at enqueue time, e.g. "1080p · 4.5 Mbps". */
+    val qualityLabel: String? = null,
+    /** Host the media came from, for the downloads-list subtitle. */
+    val sourceHost: String? = null
 ) {
     companion object {
         /**

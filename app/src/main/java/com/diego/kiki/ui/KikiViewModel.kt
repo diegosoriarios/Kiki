@@ -13,6 +13,7 @@ import com.diego.kiki.browser.TabState
 import com.diego.kiki.data.AppDatabase
 import com.diego.kiki.data.BookmarkRecord
 import com.diego.kiki.data.DownloadRecord
+import com.diego.kiki.data.DownloadStatus
 import com.diego.kiki.data.HistoryRecord
 import com.diego.kiki.data.SiteSettingsRecord
 import com.diego.kiki.download.BulkItem
@@ -21,12 +22,18 @@ import com.diego.kiki.download.DownloadProgress
 import com.diego.kiki.download.DownloadRequest
 import com.diego.kiki.download.DownloadStorage
 import com.diego.kiki.download.MediaCandidate
+import com.diego.kiki.download.MediaNaming
 import com.diego.kiki.download.MediaSniffer
 import com.diego.kiki.download.MediaTypes
 import com.diego.kiki.download.SegmentCandidateRegistry
+import com.diego.kiki.download.VariantQuality
+import com.diego.kiki.hls.HlsPlaylist
+import com.diego.kiki.hls.M3U8Parser
 import com.diego.kiki.security.AppLockManager
 import com.diego.kiki.security.SecurePrefs
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -37,6 +44,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class FindInPageState(
     val isVisible: Boolean = false,
@@ -565,6 +573,7 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
     fun showMediaSheet() {
         // Re-run the DOM scan in case content appeared after PageFinished
         tabManager.resniffActiveTab()
+        refreshStreamQualities()
         _isMediaSheetVisible.value = true
     }
 
@@ -576,36 +585,128 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
         return tabManager.segmentRegistry.captureFor(activeTabId.value)
     }
 
+    // HLS quality metadata -----------------------------------------------------------
+
+    /**
+     * Variant playlists with parsed quality (RESOLUTION/BANDWIDTH), keyed by
+     * master playlist URL. Fetched lazily when the media sheet opens.
+     */
+    private val _variantQuality = MutableStateFlow<Map<String, List<VariantQuality>>>(emptyMap())
+
+    val variantQuality: StateFlow<Map<String, List<VariantQuality>>> =
+        _variantQuality.asStateFlow()
+
+    private val variantQualityCache =
+        java.util.concurrent.ConcurrentHashMap<String, List<VariantQuality>>()
+    private var variantQualityJob: Job? = null
+
+    private fun refreshStreamQualities() {
+        val capture = tabManager.segmentRegistry.captureFor(activeTabId.value)
+        val pending = capture.streamGroups
+            .filter { it.kind == MediaTypes.HLS }
+            .map { it.best.url }
+            .filter { !variantQualityCache.containsKey(it) }
+        if (pending.isEmpty()) {
+            _variantQuality.value = variantQualityCache.toMap()
+            return
+        }
+        variantQualityJob?.cancel()
+        variantQualityJob = viewModelScope.launch {
+            pending.forEach { url ->
+                val variants = fetchVariantQuality(url)
+                if (variants.isNotEmpty()) {
+                    variantQualityCache[url] = variants
+                }
+            }
+            _variantQuality.value = variantQualityCache.toMap()
+        }
+    }
+
+    /** Fetches + parses a master playlist; empty list on any failure. */
+    private suspend fun fetchVariantQuality(masterUrl: String): List<VariantQuality> =
+        withContext(Dispatchers.IO) {
+            try {
+                val tab = activeTab.value
+                val headers = DownloadRequest.pageHeaders(
+                    pageUrl = tab?.url,
+                    targetUrl = masterUrl,
+                    userAgent = tab?.webView?.settings?.userAgentString
+                )
+                val request = okhttp3.Request.Builder()
+                    .url(masterUrl)
+                    .apply { headers.forEach { (name, value) -> header(name, value) } }
+                    .build()
+                downloadCoordinator.client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@use emptyList()
+                    val body = response.body?.string() ?: return@use emptyList()
+                    val playlist = M3U8Parser.parse(body, masterUrl)
+                    (playlist as? HlsPlaylist.Master)?.variants
+                        ?.sortedByDescending { it.bandwidth }
+                        ?.map { VariantQuality(it.url, it.bandwidth, it.resolution) }
+                        ?: emptyList()
+                }
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+
     fun downloadMediaCandidate(candidate: MediaCandidate) {
         if (candidate.type == MediaTypes.BLOB) {
-            downloadBlob(candidate.url)
+            downloadBlob(candidate.url, candidate)
             return
         }
         if (candidate.type == MediaTypes.HLS) {
-            downloadHlsStream(candidate.url)
+            downloadHlsStream(
+                playlistUrl = candidate.url,
+                qualityLabel = MediaNaming.qualityLabel(candidate.height),
+                thumbnailUrl = candidate.posterUrl
+            )
             return
         }
-        startMediaDownload(candidate.url)
+        startMediaDownload(
+            url = candidate.url,
+            thumbnailUrl = candidate.posterUrl,
+            qualityLabel = MediaNaming.qualityLabel(candidate.height),
+            sourceHost = MediaNaming.shortHost(candidate.url)
+        )
         hideMediaSheet()
     }
 
-    fun downloadHlsStream(playlistUrl: String) {
-        startHlsDownload(playlistUrl, showToast = true)
+    fun downloadHlsStream(
+        playlistUrl: String,
+        qualityLabel: String? = null,
+        thumbnailUrl: String? = null
+    ) {
+        startHlsDownload(playlistUrl, qualityLabel, thumbnailUrl, showToast = true)
         hideMediaSheet()
     }
 
-    private fun startHlsDownload(playlistUrl: String, showToast: Boolean) {
+    private fun startHlsDownload(
+        playlistUrl: String,
+        qualityLabel: String? = null,
+        thumbnailUrl: String? = null,
+        showToast: Boolean
+    ) {
         val tab = activeTab.value
         val headers = DownloadRequest.pageHeaders(
             pageUrl = tab?.url,
             targetUrl = playlistUrl,
             userAgent = tab?.webView?.settings?.userAgentString
         )
-        val raw = DownloadStorage.fileNameFromUrl(playlistUrl)
-        val base = raw.substringBeforeLast('.', missingDelimiterValue = raw)
-            .ifBlank { "stream" }
+        // Skip generic playlist names (index/playlist/chunklist): use the nearest
+        // meaningful path segment, else host + timestamp so files stay distinguishable
+        val base = MediaNaming.smartBaseName(playlistUrl).ifBlank {
+            "video-${MediaNaming.shortHost(playlistUrl).ifBlank { "stream" }}-${System.currentTimeMillis() / 1000}"
+        }
         val fileName = DownloadStorage.sanitizeFileName(base) + ".mp4"
-        downloadCoordinator.enqueueHls(playlistUrl, headers, fileName)
+        downloadCoordinator.enqueueHls(
+            url = playlistUrl,
+            headers = headers,
+            fileName = fileName,
+            thumbnailUrl = thumbnailUrl,
+            qualityLabel = qualityLabel,
+            sourceHost = MediaNaming.shortHost(playlistUrl)
+        )
         if (showToast) {
             android.widget.Toast.makeText(
                 getApplication(), "Stream download started", android.widget.Toast.LENGTH_SHORT
@@ -617,15 +718,23 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
      * Downloads a blob: URL by streaming it out of the page in chunks.
      * The source page must stay open until the transfer finishes.
      */
-    fun downloadBlob(blobUrl: String) {
-        startBlobDownload(blobUrl)
+    fun downloadBlob(blobUrl: String, candidate: MediaCandidate? = null) {
+        startBlobDownload(
+            blobUrl = blobUrl,
+            thumbnailUrl = candidate?.posterUrl,
+            qualityLabel = MediaNaming.qualityLabel(candidate?.height ?: 0)
+        )
         hideMediaSheet()
         android.widget.Toast.makeText(
             getApplication(), "Download started — keep this page open", android.widget.Toast.LENGTH_SHORT
         ).show()
     }
 
-    private fun startBlobDownload(blobUrl: String): String? {
+    private fun startBlobDownload(
+        blobUrl: String,
+        thumbnailUrl: String? = null,
+        qualityLabel: String? = null
+    ): String? {
         val tab = activeTab.value
         val tabId = tab?.id ?: return null
         val headers = DownloadRequest.pageHeaders(
@@ -642,7 +751,10 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
             blobUrl = blobUrl,
             tabId = tabId,
             headers = headers,
-            fileName = fileName
+            fileName = fileName,
+            thumbnailUrl = thumbnailUrl,
+            qualityLabel = qualityLabel,
+            sourceHost = MediaNaming.shortHost(tab?.url ?: "").ifBlank { null }
         )
         injectBlobFetch(id, blobUrl, tabId)
         return id
@@ -665,20 +777,37 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
         startMediaDownload(url)
     }
 
-    private fun startMediaDownload(url: String, showToast: Boolean = true) {
+    private fun startMediaDownload(
+        url: String,
+        thumbnailUrl: String? = null,
+        qualityLabel: String? = null,
+        sourceHost: String? = null,
+        showToast: Boolean = true
+    ) {
         val tab = activeTab.value
         val headers = DownloadRequest.pageHeaders(
             pageUrl = tab?.url,
             targetUrl = url,
             userAgent = tab?.webView?.settings?.userAgentString
         )
-        val fileName = DownloadStorage.fileNameFromHeaders(url, null, null)
+        var fileName = DownloadStorage.fileNameFromHeaders(url, null, null)
+        // Generic names (index.mp4, video.mp4) get a host prefix so parallel
+        // downloads stay distinguishable in the list
+        val nameBase = fileName.substringBeforeLast('.')
+        if (MediaNaming.isGenericToken(nameBase)) {
+            val host = MediaNaming.shortHost(url).ifBlank { "media" }
+            val ext = DownloadStorage.fileExtensionOf(fileName).ifBlank { "mp4" }
+            fileName = DownloadStorage.sanitizeFileName("$host-$nameBase") + ".$ext"
+        }
         downloadCoordinator.enqueue(
             DownloadRequest(
                 url = url,
                 headers = headers,
                 fileName = fileName,
-                mimeType = null
+                mimeType = null,
+                thumbnailUrl = thumbnailUrl,
+                qualityLabel = qualityLabel,
+                sourceHost = sourceHost ?: MediaNaming.shortHost(url).ifBlank { null }
             )
         )
         if (showToast) {
@@ -695,6 +824,30 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
         clearStorage: Boolean
     ) {
         tabManager.clearBrowsingData(clearHistory, clearCookies, clearCache, clearStorage)
+    }
+
+    // Page recording ----------------------------------------------------------------
+
+    /**
+     * Starts capturing the active tab's WebView (page content only — no system
+     * consent dialog). False when no page is laid out yet.
+     */
+    fun startScreenRecording(): Boolean =
+        com.diego.kiki.screenrec.ScreenRecorder.start(getApplication()) {
+            tabManager.getActiveTab()?.webView
+        }
+
+    fun stopScreenRecording() = com.diego.kiki.screenrec.ScreenRecorder.stop()
+
+    /**
+     * One-shot local thumbnail extraction for completed downloads that predate
+     * thumbnail support (the coordinator dedupes attempts per process run).
+     */
+    fun backfillThumbnail(record: DownloadRecord) {
+        if (record.status != DownloadStatus.COMPLETED || record.thumbnailPath != null) return
+        viewModelScope.launch(Dispatchers.IO) {
+            downloadCoordinator.attachThumbnail(record.id)
+        }
     }
 
     // Auto-scroll & bulk download ---------------------------------------------------
@@ -772,17 +925,23 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
         // One bulk entry per stream (its best playlist), not per variant
         capture.streamGroups.forEach { group ->
             if (group.kind == MediaTypes.HLS) {
-                out.putIfAbsent(group.best.url, BulkItem(group.best.url, group.best.url, MediaTypes.HLS))
+                out.putIfAbsent(
+                    group.best.url,
+                    BulkItem(group.best.url, MediaNaming.displayTitle(group.best.url), MediaTypes.HLS)
+                )
             }
         }
         val streamUrls = capture.streamGroups.flatMap { group -> group.variants.map { it.url } }.toSet()
         capture.mediaGroups.forEach { g ->
-            out.putIfAbsent(g.sampleUrl, BulkItem(g.sampleUrl, g.sampleUrl, g.kind))
+            out.putIfAbsent(g.url, BulkItem(g.url, MediaNaming.displayTitle(g.url), g.kind))
         }
         tabManager.mediaCandidates.value[tabId]?.forEach { c ->
             if (c.type == MediaTypes.IMAGE || c.type == MediaTypes.DASH) return@forEach
             if (c.url in streamUrls) return@forEach
-            out.putIfAbsent(c.url, BulkItem(c.url, c.url, c.type))
+            out.putIfAbsent(
+                c.url,
+                BulkItem(c.url, MediaNaming.displayTitle(c.url, fallback = MediaTypes.label(c.type)), c.type)
+            )
         }
         return out.values.toList()
     }
@@ -792,14 +951,15 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
         var started = 0
         var blobs = 0
         items.forEach { item ->
+            val (poster, quality, host) = bulkMetadataFor(item.url)
             when (item.type) {
                 MediaTypes.HLS -> {
-                    startHlsDownload(item.url, showToast = false)
+                    startHlsDownload(item.url, quality, poster, showToast = false)
                     started++
                 }
 
                 MediaTypes.BLOB -> {
-                    if (startBlobDownload(item.url) != null) {
+                    if (startBlobDownload(item.url, poster, quality) != null) {
                         blobs++
                         started++
                     }
@@ -808,7 +968,7 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
                 MediaTypes.DASH -> Unit // unsupported pipeline
 
                 else -> {
-                    startMediaDownload(item.url, showToast = false)
+                    startMediaDownload(item.url, poster, quality, host, showToast = false)
                     started++
                 }
             }
@@ -823,6 +983,23 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
             },
             android.widget.Toast.LENGTH_LONG
         ).show()
+    }
+
+    /**
+     * Poster / quality / host for a bulk item, looked up from the tab's DOM
+     * candidates and parsed HLS variants (whatever was captured at sniff time).
+     */
+    private fun bulkMetadataFor(url: String): Triple<String?, String?, String?> {
+        val candidate = tabManager.mediaCandidates.value[activeTabId.value]
+            ?.find { it.url == url }
+        val quality = MediaNaming.qualityLabel(candidate?.height ?: 0)
+            ?: variantQualityCache[url]?.firstOrNull()?.let {
+                MediaNaming.qualityLabelFor(it.resolution, it.bandwidth)
+            }
+        val host = MediaNaming.shortHost(url).ifBlank {
+            MediaNaming.shortHost(activeTab.value?.url ?: "")
+        }
+        return Triple(candidate?.posterUrl, quality, host.ifBlank { null })
     }
 
     private fun captureCountFor(tabId: String): Int {

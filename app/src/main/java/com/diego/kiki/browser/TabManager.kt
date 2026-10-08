@@ -426,8 +426,35 @@ class TabManager(
     private fun mergeMediaCandidates(tabId: String, incoming: List<MediaCandidate>) {
         _mediaCandidates.update { current ->
             val existing = current[tabId] ?: emptyList()
-            val seen = existing.mapTo(mutableSetOf()) { it.url }
-            val merged = existing + incoming.filter { it.url !in seen }
+            val now = System.currentTimeMillis()
+            val byUrl = existing.associateBy { it.url }.toMutableMap()
+            incoming.forEach { candidate ->
+                val previous = byUrl[candidate.url]
+                byUrl[candidate.url] = if (previous == null) {
+                    candidate.copy(lastSeenAt = now)
+                } else {
+                    // Re-observation refreshes recency and fills in richer metadata
+                    previous.copy(
+                        lastSeenAt = now,
+                        posterUrl = candidate.posterUrl ?: previous.posterUrl,
+                        width = candidate.width.takeIf { it > 0 } ?: previous.width,
+                        height = candidate.height.takeIf { it > 0 } ?: previous.height
+                    )
+                }
+            }
+            // Newest-first so the video the user just opened is always on top
+            var merged = byUrl.values.sortedByDescending { it.lastSeenAt }
+            // Players revoke blob: URLs as the user picks new episodes — evict
+            // the oldest so stale look-alike rows don't pile up
+            val blobs = merged.filter { it.url.startsWith("blob:") }
+            if (blobs.size > MAX_BLOB_CANDIDATES_PER_TAB) {
+                val evict = blobs.asSequence()
+                    .sortedByDescending { it.lastSeenAt }
+                    .drop(MAX_BLOB_CANDIDATES_PER_TAB)
+                    .map { it.url }
+                    .toSet()
+                merged = merged.filter { it.url !in evict }
+            }
             current + (tabId to merged)
         }
     }
@@ -559,5 +586,8 @@ class TabManager(
     companion object {
         private val MEDIA_LONG_PRESS_REGEX =
             Regex("\\.(mp4|webm|mkv|mov|avi|flv|mp3|m4a|ogg|wav|jpe?g|png|gif|webp|bmp)([?#].*)?$", RegexOption.IGNORE_CASE)
+
+        /** Blob: candidates kept per tab before oldest eviction. */
+        private const val MAX_BLOB_CANDIDATES_PER_TAB = 12
     }
 }

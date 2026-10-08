@@ -2,6 +2,8 @@ package com.diego.kiki.download
 
 import android.util.Base64
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -86,7 +88,19 @@ class MediaSniffer(
                 val url = obj[KEY_URL]?.jsonPrimitive?.content ?: return@mapNotNull null
                 val type = obj[KEY_TYPE]?.jsonPrimitive?.content ?: MediaTypes.VIDEO
                 val tag = obj[KEY_TAG]?.jsonPrimitive?.content ?: ""
-                if (url.startsWith("http")) MediaCandidate(url, type, tag) else null
+                val poster = (obj[KEY_POSTER] as? JsonPrimitive)
+                    ?.takeIf { it !is JsonNull }?.content
+                val width = (obj[KEY_WIDTH] as? JsonPrimitive)?.content?.toIntOrNull() ?: 0
+                val height = (obj[KEY_HEIGHT] as? JsonPrimitive)?.content?.toIntOrNull() ?: 0
+                if (!url.startsWith("http") && !url.startsWith("blob:")) return@mapNotNull null
+                MediaCandidate(
+                    url = url,
+                    type = type,
+                    sourceTag = tag,
+                    posterUrl = poster,
+                    width = width,
+                    height = height
+                )
             }
         } catch (_: Exception) {
             emptyList()
@@ -99,6 +113,9 @@ class MediaSniffer(
         private const val KEY_URL = "url"
         private const val KEY_TYPE = "type"
         private const val KEY_TAG = "tag"
+        private const val KEY_POSTER = "poster"
+        private const val KEY_WIDTH = "w"
+        private const val KEY_HEIGHT = "h"
 
         /**
          * Installed once per document: hooks XHR/fetch to detect playlist responses
@@ -200,12 +217,24 @@ class MediaSniffer(
                     function abs(raw) {
                         try { return new URL(raw, location.href).href; } catch (e) { return null; }
                     }
-                    function add(raw, type, tag) {
+                    function add(raw, type, tag, meta) {
                         if (!raw || results.length >= MAX) return;
                         var u = abs(raw);
-                        if (!u || !/^https?:/i.test(u) || seen[u]) return;
+                        if (!u || seen[u]) return;
+                        var isHttp = /^https?:/i.test(u);
+                        var isBlob = /^blob:/i.test(u);
+                        if (!isHttp && !isBlob) return;
                         seen[u] = 1;
-                        results.push({url: u, type: type, tag: tag});
+                        var item = {url: u, type: type, tag: tag};
+                        if (meta) {
+                            if (meta.poster) {
+                                var p = abs(meta.poster);
+                                if (p) item.poster = p;
+                            }
+                            if (meta.w > 0) item.w = meta.w;
+                            if (meta.h > 0) item.h = meta.h;
+                        }
+                        results.push(item);
                     }
                     var nodes = document.querySelectorAll('video,audio,source,a[href]');
                     for (var i = 0; i < nodes.length; i++) {
@@ -215,12 +244,15 @@ class MediaSniffer(
                             var src = el.currentSrc || el.src || el.getAttribute('src');
                             var kind = tag === 'video' ? 'VIDEO' : 'AUDIO';
                             if (src) {
-                                if (hlsExt.test(src)) kind = 'HLS';
+                                if (/^blob:/i.test(src)) kind = 'BLOB';
+                                else if (hlsExt.test(src)) kind = 'HLS';
                                 else if (dashExt.test(src)) kind = 'DASH';
-                                add(src, kind, tag);
+                                add(src, kind, tag, {
+                                    poster: tag === 'video' ? el.getAttribute('poster') : null,
+                                    w: el.videoWidth || 0,
+                                    h: el.videoHeight || 0
+                                });
                             }
-                            var poster = el.getAttribute('poster');
-                            if (poster && tag === 'video') add(poster, 'IMAGE', 'poster');
                         } else if (tag === 'source') {
                             var s = el.getAttribute('src');
                             if (s) {
@@ -232,13 +264,13 @@ class MediaSniffer(
                                     t = mt.indexOf('audio') === 0 ? 'AUDIO'
                                         : mt.indexOf('image') === 0 ? 'IMAGE' : 'VIDEO';
                                 }
-                                add(s, t, 'source');
+                                add(s, t, 'source', null);
                             }
                         } else if (tag === 'a') {
                             var href = el.getAttribute('href');
                             if (href && (mediaExt.test(href) || hlsExt.test(href) || dashExt.test(href))) {
                                 var at = hlsExt.test(href) ? 'HLS' : dashExt.test(href) ? 'DASH' : 'VIDEO';
-                                add(href, at, 'a');
+                                add(href, at, 'a', null);
                             }
                         }
                     }

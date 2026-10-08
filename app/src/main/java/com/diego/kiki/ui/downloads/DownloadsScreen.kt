@@ -42,6 +42,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -73,6 +74,15 @@ fun DownloadsScreen(
     val activeProgress by viewModel.activeDownloadProgress.collectAsState()
     val context = LocalContext.current
     var showClearAllDialog by remember { mutableStateOf(false) }
+
+    // Backfill local thumbnails for completed downloads that predate them
+    LaunchedEffect(records) {
+        records.forEach { record ->
+            if (record.status == DownloadStatus.COMPLETED && record.thumbnailPath == null) {
+                viewModel.backfillThumbnail(record)
+            }
+        }
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -212,11 +222,10 @@ private fun DownloadRow(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = iconFor(record),
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(32.dp)
+        MediaThumbnail(
+            model = thumbnailModelFor(record),
+            icon = iconFor(record),
+            size = 56.dp
         )
         Spacer(modifier = Modifier.size(12.dp))
 
@@ -228,6 +237,21 @@ private fun DownloadRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+            val metaLine = listOfNotNull(
+                record.qualityLabel?.takeIf { it.isNotBlank() },
+                record.sourceHost?.takeIf { it.isNotBlank() }
+            ).joinToString(" · ")
+            if (metaLine.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = metaLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             Spacer(modifier = Modifier.height(2.dp))
             val sizeText = if (isHls && total > 0) {
                 "$downloaded / $total segments · ${statusLabel(status)}"
@@ -317,6 +341,25 @@ private fun RowAction(
         )
     }
 }
+
+/**
+ * Thumbnail model for a row: extracted local frame first, the file itself for
+ * completed image downloads, then the remote poster captured at enqueue time.
+ * Null → the row falls back to its type icon.
+ */
+private fun thumbnailModelFor(record: DownloadRecord): Any? {
+    record.thumbnailPath?.let { return java.io.File(it) }
+    val ext = DownloadStorage.fileExtensionOf(record.fileName)
+    if (record.status == DownloadStatus.COMPLETED &&
+        record.filePath.isNotBlank() &&
+        ext in IMAGE_EXTENSIONS
+    ) {
+        return java.io.File(record.filePath)
+    }
+    return record.thumbnailUrl
+}
+
+private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "svg")
 
 private fun iconFor(record: DownloadRecord): androidx.compose.ui.graphics.vector.ImageVector {
     return when (DownloadStorage.fileExtensionOf(record.fileName)) {

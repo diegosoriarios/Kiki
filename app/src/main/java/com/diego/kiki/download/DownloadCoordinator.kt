@@ -60,6 +60,9 @@ class DownloadCoordinator private constructor(context: Context) {
     private val lastHlsNotifyAt = ConcurrentHashMap<String, Long>()
     private val blobJobs = ConcurrentHashMap<String, BlobDownloadJob>()
 
+    /** Ids already tried for local thumbnail extraction (one attempt per run). */
+    private val thumbnailAttempted = ConcurrentHashMap.newKeySet<String>()
+
     init {
         HlsNotifier.ensureChannel(appContext)
         // Downloads interrupted by process death; workers re-run and flip these back if they resume.
@@ -79,7 +82,10 @@ class DownloadCoordinator private constructor(context: Context) {
             totalBytes = -1,
             downloadedBytes = 0,
             status = DownloadStatus.QUEUED,
-            downloadType = TYPE_DIRECT
+            downloadType = TYPE_DIRECT,
+            thumbnailUrl = request.thumbnailUrl,
+            qualityLabel = request.qualityLabel,
+            sourceHost = request.sourceHost
         )
         scope.launch {
             dao.insertDownload(record)
@@ -96,7 +102,14 @@ class DownloadCoordinator private constructor(context: Context) {
      * Starts an HLS → MP4 pipeline job for the given playlist URL.
      * fileName should already end in .mp4.
      */
-    fun enqueueHls(url: String, headers: Map<String, String>, fileName: String): String {
+    fun enqueueHls(
+        url: String,
+        headers: Map<String, String>,
+        fileName: String,
+        thumbnailUrl: String? = null,
+        qualityLabel: String? = null,
+        sourceHost: String? = null
+    ): String {
         val id = UUID.randomUUID().toString()
         val record = DownloadRecord(
             id = id,
@@ -107,7 +120,10 @@ class DownloadCoordinator private constructor(context: Context) {
             totalBytes = -1,
             downloadedBytes = 0,
             status = DownloadStatus.QUEUED,
-            downloadType = TYPE_HLS
+            downloadType = TYPE_HLS,
+            thumbnailUrl = thumbnailUrl,
+            qualityLabel = qualityLabel,
+            sourceHost = sourceHost
         )
         scope.launch {
             dao.insertDownload(record)
@@ -152,7 +168,10 @@ class DownloadCoordinator private constructor(context: Context) {
         blobUrl: String,
         tabId: String,
         headers: Map<String, String>,
-        fileName: String
+        fileName: String,
+        thumbnailUrl: String? = null,
+        qualityLabel: String? = null,
+        sourceHost: String? = null
     ): String {
         val id = UUID.randomUUID().toString()
         val record = DownloadRecord(
@@ -164,7 +183,10 @@ class DownloadCoordinator private constructor(context: Context) {
             totalBytes = -1,
             downloadedBytes = 0,
             status = DownloadStatus.QUEUED,
-            downloadType = TYPE_BLOB
+            downloadType = TYPE_BLOB,
+            thumbnailUrl = thumbnailUrl,
+            qualityLabel = qualityLabel,
+            sourceHost = sourceHost
         )
         scope.launch {
             dao.insertDownload(record)
@@ -225,6 +247,7 @@ class DownloadCoordinator private constructor(context: Context) {
                                 errorMessage = null
                             )
                         )
+                        attachThumbnail(id)
                     }
                     HlsNotifier.finished(appContext, id, record.fileName, success = true, message = null)
                 }
@@ -269,6 +292,7 @@ class DownloadCoordinator private constructor(context: Context) {
                                 errorMessage = outcome.message
                             )
                         )
+                        attachThumbnail(id)
                     }
                     HlsNotifier.finished(appContext, id, fileName, success = true, message = outcome.message)
                 }
@@ -371,6 +395,7 @@ class DownloadCoordinator private constructor(context: Context) {
         scope.launch {
             val file = record.filePath.takeIf { it.isNotBlank() }?.let { File(it) }
             file?.delete()
+            record.thumbnailPath?.let { File(it).delete() }
             DownloadStorage.partFile(appContext, record.id).delete()
             dao.deleteDownloadById(record.id)
             _activeProgress.update { it - record.id }
@@ -397,6 +422,12 @@ class DownloadCoordinator private constructor(context: Context) {
                     DownloadStorage.partFile(appContext, record.id).delete()
                 } catch (_: Exception) {
                 }
+                record.thumbnailPath?.let { path ->
+                    try {
+                        File(path).delete()
+                    } catch (_: Exception) {
+                    }
+                }
             }
             blobJobs.values.toList().forEach { it.cancel() }
             hlsJobs.values.toList().forEach { it.cancel() }
@@ -409,6 +440,24 @@ class DownloadCoordinator private constructor(context: Context) {
     fun getJob(id: String): MediaDownloadJob? {
         val current = _activeProgress.value[id] ?: return null
         return JobHandle(id, requestCache[id]?.url ?: "", current.status)
+    }
+
+    /**
+     * Extracts a local thumbnail from the finished file and stores its path on
+     * the record. Idempotent; no-op for non-media files or failed extraction.
+     * Called on every completion path (direct/HLS/blob) and from the page
+     * recorder after it inserts its record.
+     */
+    suspend fun attachThumbnail(id: String) {
+        val record = dao.getDownloadById(id) ?: return
+        if (record.thumbnailPath != null) return
+        if (!thumbnailAttempted.add(id)) return
+        val file = record.filePath.takeIf { it.isNotBlank() }?.let { File(it) } ?: return
+        if (!file.exists()) return
+        val outFile = DownloadStorage.thumbnailFile(appContext, id)
+        if (ThumbnailExtractor.extract(file, outFile, record.mimeType)) {
+            dao.updateThumbnailPath(id, outFile.absolutePath)
+        }
     }
 
     // Called from DownloadWorker -------------------------------------------------
@@ -472,6 +521,7 @@ class DownloadCoordinator private constructor(context: Context) {
                         totalBytes = finalFile.length()
                     )
                 )
+                attachThumbnail(id)
             } else if (status == DownloadStatus.FAILED) {
                 dao.insertDownload(
                     record.copy(

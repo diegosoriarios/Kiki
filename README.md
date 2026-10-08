@@ -39,14 +39,16 @@ HLS streams remuxed to MP4), ad blocking, and a biometric app lock.
 - **Direct downloads** — APK / PDF / ZIP files with progress UI
 - **Bulk download** — grab every quality option of every stream on a page at once, with
   de-duplicated stream grouping
-- Downloads screen with progress, pause/resume/cancel, app-private storage plus optional
-  export to MediaStore Downloads; clear-all kept copies included
+- Downloads screen with thumbnails, quality info, progress, pause/resume/cancel,
+  app-private storage plus optional export to MediaStore Downloads; clear-all kept
+  copies included
 - Background reliability via WorkManager
 
 ### Extras
 - **Night mode** — CSS-filter based force-dark, global toggle plus per-site overrides
 - **Per-site settings** — desktop mode, JavaScript and night mode as Default / On / Off per host
-- **Screen recording** — MediaProjection capture with consent flow
+- **Page recording** — captures the page content only (in-app WebView capture, no
+  system consent dialog); browser chrome and the auto-scroll UI stay out of the video
 - **Auto-scroll** — hands-free scrolling via draggable start/end swipe pins (gesture replay)
 
 ## Install
@@ -120,7 +122,6 @@ Required repository secrets:
 - **Storage / media** — saving downloads and exporting to MediaStore
 - **Notifications** — download progress
 - **Biometrics** — app lock
-- **Screen capture** — only when you start a recording (per-session consent dialog)
 
 ## Limitations
 

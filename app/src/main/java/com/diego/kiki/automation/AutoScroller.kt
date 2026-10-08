@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.math.hypot
 
@@ -99,14 +100,17 @@ class AutoScroller(
 
     private suspend fun runLoop(tabId: String, pins: GesturePins) {
         while (true) {
-            val current = _state.value
-            if (!current.running) return
+            if (!_state.value.running) return
             val webView = tabResolver(tabId)?.webView ?: run {
                 finish(tabId, StopReason.TAB_GONE)
                 return
             }
             performSwipe(webView, pins)
-            _state.value = current.copy(swipeCount = current.swipeCount + 1)
+            // update {} instead of writing a stale snapshot: interval changes
+            // made mid-swipe (panel chips stay live) must not be reverted
+            _state.update { current ->
+                if (current.running) current.copy(swipeCount = current.swipeCount + 1) else current
+            }
             onSwipe?.invoke(tabId)
             delay(_state.value.intervalMs)
         }
@@ -120,6 +124,9 @@ class AutoScroller(
         val y1 = (pins.endY * webView.height).coerceIn(0f, webView.height.toFloat())
 
         val points = interpolateSwipe(x0, y0, x1, y1, SWIPE_STEPS)
+        // One constant downTime for the whole gesture — per-event downTimes make
+        // every event look like a fresh tap, so velocity tracking computes zero
+        // velocity and fling-driven feeds never scroll
         val downTime = SystemClock.uptimeMillis()
         var elapsed = 0L
 
@@ -129,7 +136,7 @@ class AutoScroller(
                 points.lastIndex -> MotionEvent.ACTION_UP
                 else -> MotionEvent.ACTION_MOVE
             }
-            dispatchTouch(webView, action, downTime + elapsed, x, y)
+            dispatchTouch(webView, downTime, downTime + elapsed, action, x, y)
             if (index != points.lastIndex) {
                 delay(SWIPE_STEP_DELAY_MS)
                 elapsed += SWIPE_STEP_DELAY_MS
@@ -137,8 +144,15 @@ class AutoScroller(
         }
     }
 
-    private fun dispatchTouch(webView: WebView, action: Int, eventTime: Long, x: Float, y: Float) {
-        val event = MotionEvent.obtain(eventTime, eventTime, action, x, y, 0)
+    private fun dispatchTouch(
+        webView: WebView,
+        downTime: Long,
+        eventTime: Long,
+        action: Int,
+        x: Float,
+        y: Float
+    ) {
+        val event = MotionEvent.obtain(downTime, eventTime, action, x, y, 0)
         try {
             webView.dispatchTouchEvent(event)
         } finally {

@@ -260,7 +260,7 @@ fun BottomToolbar(
                     )
 
                     DropdownMenuItem(
-                        text = { Text(if (isScreenRecording) "Stop Recording" else "Screen Record") },
+                        text = { Text(if (isScreenRecording) "Stop Recording" else "Record page") },
                         leadingIcon = {
                             Icon(
                                 Icons.Default.FiberManualRecord,

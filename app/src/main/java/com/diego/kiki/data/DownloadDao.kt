@@ -31,6 +31,9 @@ interface DownloadDao {
     @Query("UPDATE downloads SET status = :status WHERE id = :id")
     suspend fun updateStatus(id: String, status: DownloadStatus)
 
+    @Query("UPDATE downloads SET thumbnailPath = :path WHERE id = :id")
+    suspend fun updateThumbnailPath(id: String, path: String)
+
     @Query("UPDATE downloads SET status = 'FAILED' WHERE status IN ('QUEUED', 'DOWNLOADING')")
     suspend fun resetInterrupted()
 

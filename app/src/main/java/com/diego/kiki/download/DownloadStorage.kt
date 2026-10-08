@@ -25,6 +25,13 @@ object DownloadStorage {
         return File(cacheDir, "$id.part")
     }
 
+    /** App-private thumbnail target for a download, keyed by record id. */
+    fun thumbnailFile(context: Context, id: String): File {
+        val dir = File(context.filesDir, "thumbnails")
+        if (!dir.exists()) dir.mkdirs()
+        return File(dir, "$id.jpg")
+    }
+
     fun sanitizeFileName(name: String): String {
         val cleaned = name
             .substringAfterLast('/')

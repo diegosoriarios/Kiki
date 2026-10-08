@@ -29,7 +29,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.diego.kiki.MainActivity
 import com.diego.kiki.ui.KikiViewModel
 import com.diego.kiki.ui.LockScreen
 import com.diego.kiki.ui.bookmarks.BookmarksScreen
@@ -79,8 +78,9 @@ fun BrowserScreen(
     val isAutoScrollPanelVisible by viewModel.isAutoScrollPanelVisible.collectAsState()
     val autoScrollState by viewModel.autoScroller.state.collectAsState()
     val isBulkSheetVisible by viewModel.isBulkSheetVisible.collectAsState()
+    val variantQuality by viewModel.variantQuality.collectAsState()
     var showSiteSettingsDialog by remember { mutableStateOf(false) }
-    val isScreenRecording by com.diego.kiki.screenrec.RecordingService.isRecording.collectAsState()
+    val isScreenRecording by com.diego.kiki.screenrec.ScreenRecorder.isRecording.collectAsState()
 
     val context = LocalContext.current
     val canUseBiometrics = remember { viewModel.appLock.isBiometricAvailable(context) }
@@ -234,9 +234,13 @@ fun BrowserScreen(
                         onOpenAutoScroll = { viewModel.showAutoScrollPanel() },
                         onToggleScreenRecord = {
                             if (isScreenRecording) {
-                                com.diego.kiki.screenrec.RecordingService.stop(context)
-                            } else {
-                                (context as? MainActivity)?.launchScreenRecordConsent()
+                                viewModel.stopScreenRecording()
+                            } else if (!viewModel.startScreenRecording()) {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "Open a page to record it",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
                             }
                         },
                         isScreenRecording = isScreenRecording
@@ -268,8 +272,12 @@ fun BrowserScreen(
                         )
                     }
                     if (pillVisible) {
+                        // Streams count too — a streams-only page would show "0"
+                        val tabCapture = viewModel.mediaCaptureForActiveTab()
+                        val pillCount = tabCandidates.size +
+                                tabCapture.streamGroups.size + tabCapture.mediaGroups.size
                         DownloadPill(
-                            count = tabCandidates.size,
+                            count = pillCount,
                             onClick = { viewModel.showMediaSheet() },
                             modifier = Modifier
                                 .align(Alignment.BottomEnd)
@@ -277,11 +285,10 @@ fun BrowserScreen(
                         )
                     }
                     if (isScreenRecording) {
-                        // Recording indicator + tap-to-stop, above everything
+                        // Recording indicator + tap-to-stop — composed outside the
+                        // WebView, so it never appears in the recording itself
                         Surface(
-                            onClick = {
-                                com.diego.kiki.screenrec.RecordingService.stop(context)
-                            },
+                            onClick = { viewModel.stopScreenRecording() },
                             shape = RoundedCornerShape(20.dp),
                             color = MaterialTheme.colorScheme.error,
                             modifier = Modifier
@@ -368,8 +375,12 @@ fun BrowserScreen(
         if (isMediaSheetVisible) {
             MediaCandidatesSheet(
                 candidates = mediaCandidates[activeTabId].orEmpty(),
-                capture = viewModel.mediaCaptureForActiveTab(),                onDownload = { candidate -> viewModel.downloadMediaCandidate(candidate) },
-                onDownloadHls = { url -> viewModel.downloadHlsStream(url) },
+                capture = viewModel.mediaCaptureForActiveTab(),
+                variantQuality = variantQuality,
+                onDownload = { candidate -> viewModel.downloadMediaCandidate(candidate) },
+                onDownloadHls = { url, quality, poster ->
+                    viewModel.downloadHlsStream(url, quality, poster)
+                },
                 onOpenBulk = {
                     viewModel.hideMediaSheet()
                     viewModel.showBulkSheet()
