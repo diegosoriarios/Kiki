@@ -10,41 +10,26 @@ import com.diego.kiki.automation.GesturePins
 import com.diego.kiki.browser.SearchEngines
 import com.diego.kiki.browser.TabManager
 import com.diego.kiki.browser.TabState
-import com.diego.kiki.data.AppDatabase
 import com.diego.kiki.data.BookmarkRecord
 import com.diego.kiki.data.DownloadRecord
-import com.diego.kiki.data.DownloadStatus
 import com.diego.kiki.data.HistoryRecord
 import com.diego.kiki.data.SiteSettingsRecord
-import com.diego.kiki.download.BulkItem
 import com.diego.kiki.download.DownloadCoordinator
 import com.diego.kiki.download.DownloadProgress
-import com.diego.kiki.download.DownloadRequest
-import com.diego.kiki.download.DownloadStorage
 import com.diego.kiki.download.MediaCandidate
-import com.diego.kiki.download.MediaNaming
-import com.diego.kiki.download.MediaSniffer
-import com.diego.kiki.download.MediaTypes
 import com.diego.kiki.download.SegmentCandidateRegistry
-import com.diego.kiki.download.VariantQuality
-import com.diego.kiki.hls.HlsPlaylist
-import com.diego.kiki.hls.M3U8Parser
 import com.diego.kiki.security.AppLockManager
 import com.diego.kiki.security.SecurePrefs
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.Job
+import com.diego.kiki.ui.controllers.AutoScrollController
+import com.diego.kiki.ui.controllers.HistoryBookmarksController
+import com.diego.kiki.ui.controllers.MediaDownloadController
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 data class FindInPageState(
     val isVisible: Boolean = false,
@@ -62,6 +47,12 @@ data class MediaContextMenuState(
     val url: String
 )
 
+/**
+ * Thin orchestration root: owns the tab manager, app-level UI visibility
+ * state and preferences; feature logic lives in the controllers
+ * ([MediaDownloadController], [HistoryBookmarksController],
+ * [AutoScrollController]) and in [DownloadCoordinator].
+ */
 class KikiViewModel(application: Application) : AndroidViewModel(application) {
 
     // Secure prefs declared first — the initial tab restores the last page
@@ -98,9 +89,85 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
     private val _isBookmarksVisible = MutableStateFlow(false)
     val isBookmarksVisible: StateFlow<Boolean> = _isBookmarksVisible.asStateFlow()
 
+    private val _isMediaSheetVisible = MutableStateFlow(false)
+    val isMediaSheetVisible: StateFlow<Boolean> = _isMediaSheetVisible.asStateFlow()
+
+    private val _isTabSwitcherVisible = MutableStateFlow(false)
+    val isTabSwitcherVisible: StateFlow<Boolean> = _isTabSwitcherVisible.asStateFlow()
+
+    private val _isIncognitoTabGroup = MutableStateFlow(false)
+    val isIncognitoTabGroup: StateFlow<Boolean> = _isIncognitoTabGroup.asStateFlow()
+
+    private val _isAutoScrollPanelVisible = MutableStateFlow(false)
+    val isAutoScrollPanelVisible: StateFlow<Boolean> = _isAutoScrollPanelVisible.asStateFlow()
+
+    private val _isBulkSheetVisible = MutableStateFlow(false)
+    val isBulkSheetVisible: StateFlow<Boolean> = _isBulkSheetVisible.asStateFlow()
+
+    private val _findInPageState = MutableStateFlow(FindInPageState())
+    val findInPageState: StateFlow<FindInPageState> = _findInPageState.asStateFlow()
+
+    private val _fullscreenVideoState = MutableStateFlow<FullscreenVideoState?>(null)
+    val fullscreenVideoState: StateFlow<FullscreenVideoState?> = _fullscreenVideoState.asStateFlow()
+
+    private val _mediaContextMenu = MutableStateFlow<MediaContextMenuState?>(null)
+    val mediaContextMenu: StateFlow<MediaContextMenuState?> = _mediaContextMenu.asStateFlow()
+
+    private val _appLockEnabled = MutableStateFlow(securePrefs.appLockEnabled)
+    val appLockEnabled: StateFlow<Boolean> = _appLockEnabled.asStateFlow()
+
+    private val _lockIncognitoOnly = MutableStateFlow(securePrefs.lockIncognitoOnly)
+    val lockIncognitoOnly: StateFlow<Boolean> = _lockIncognitoOnly.asStateFlow()
+
     private val downloadCoordinator = DownloadCoordinator.getInstance(application)
 
     val appLock = AppLockManager(securePrefs)
+
+    val downloads = downloadCoordinator.allDownloads
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    val activeDownloadProgress: StateFlow<Map<String, DownloadProgress>> =
+        downloadCoordinator.activeProgress
+
+    val mediaCandidates = tabManager.mediaCandidates
+    val tabsWithSegments = tabManager.tabsWithSegments
+
+    // Controllers ---------------------------------------------------------------------
+
+    private val historyBookmarks = HistoryBookmarksController(
+        scope = viewModelScope,
+        context = application,
+        securePrefs = securePrefs,
+        tabManager = tabManager,
+        activeTab = activeTab
+    )
+
+    val history get() = historyBookmarks.history
+    val bookmarks get() = historyBookmarks.bookmarks
+    val historySuggestions get() = historyBookmarks.historySuggestions
+    val isCurrentTabBookmarked get() = historyBookmarks.isCurrentTabBookmarked
+
+    private val mediaController = MediaDownloadController(
+        context = application,
+        scope = viewModelScope,
+        tabManager = tabManager,
+        coordinator = downloadCoordinator,
+        activeTab = activeTab,
+        activeTabId = activeTabId,
+        downloads = downloads
+    ) {
+        _isMediaSheetVisible.value = false
+    }
+
+    val variantQuality get() = mediaController.variantQuality
+
+    val autoScrollController = AutoScrollController(viewModelScope, tabManager, activeTabId)
+
+    val autoScroller get() = autoScrollController.autoScroller
 
     init {
         tabManager.nightModeEnabled = { securePrefs.nightModeEnabled }
@@ -109,72 +176,50 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    init {
+        tabManager.onFullscreenShowListener = { view, callback ->
+            _fullscreenVideoState.value = FullscreenVideoState(view, callback)
+        }
+        tabManager.onFullscreenHideListener = {
+            exitFullscreenVideo()
+        }
+        tabManager.onMediaLongPressListener = { url ->
+            _mediaContextMenu.value = MediaContextMenuState(url)
+        }
+        tabManager.onBlobEventListener = { tabId, event ->
+            downloadCoordinator.handleBlobEvent(tabId, event)
+        }
+        historyBookmarks.observePageVisits()
+        autoScrollController.autoScroller.onSwipe = { tabId ->
+            autoScrollController.onSwipe(tabId)
+        }
+        autoScrollController.autoScroller.onFinished = { _, reason ->
+            onAutoScrollFinished(reason)
+        }
+        // If the last incognito tab disappears while locked in
+        // incognito-only mode, the lock no longer applies
+        viewModelScope.launch {
+            tabs.collect { list ->
+                if (appLock.isLocked.value &&
+                    !appLock.shouldLock(list.any { it.isIncognito })
+                ) {
+                    appLock.unlock()
+                }
+            }
+        }
+    }
+
     // History & bookmarks ---------------------------------------------------------
 
-    private val historyDao = AppDatabase.getDatabase(application).historyDao()
-    private val bookmarkDao = AppDatabase.getDatabase(application).bookmarkDao()
+    fun updateHistoryQuery(query: String) = historyBookmarks.updateHistoryQuery(query)
 
-    val history: StateFlow<List<HistoryRecord>> = historyDao.getAll()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    fun deleteHistoryEntry(record: HistoryRecord) = historyBookmarks.deleteHistoryEntry(record)
 
-    val bookmarks: StateFlow<List<BookmarkRecord>> = bookmarkDao.getAll()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    fun clearAllHistory() = historyBookmarks.clearAllHistory()
 
-    private val historyQuery = MutableStateFlow("")
+    fun removeBookmark(record: BookmarkRecord) = historyBookmarks.removeBookmark(record)
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val historySuggestions: StateFlow<List<HistoryRecord>> = historyQuery
-        .flatMapLatest { query ->
-            if (query.isBlank()) flowOf(emptyList()) else historyDao.search(query, 5)
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(500), emptyList())
-
-    fun updateHistoryQuery(query: String) {
-        historyQuery.value = query
-    }
-
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val isCurrentTabBookmarked: StateFlow<Boolean> = activeTab
-        .flatMapLatest { tab ->
-            val url = tab?.url
-            if (url.isNullOrBlank() || !(url.startsWith("http://") || url.startsWith("https://"))) {
-                flowOf(false)
-            } else {
-                bookmarkDao.observeBookmarked(url)
-            }
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(500), false)
-
-    fun deleteHistoryEntry(record: HistoryRecord) {
-        viewModelScope.launch { historyDao.deleteByUrl(record.url) }
-    }
-
-    fun clearAllHistory() {
-        viewModelScope.launch { historyDao.clearAll() }
-    }
-
-    fun removeBookmark(record: BookmarkRecord) {
-        viewModelScope.launch { bookmarkDao.deleteByUrl(record.url) }
-    }
-
-    fun toggleBookmarkForActiveTab() {
-        val tab = activeTab.value ?: return
-        val url = tab.url
-        if (!(url.startsWith("http://") || url.startsWith("https://"))) return
-        viewModelScope.launch {
-            if (bookmarkDao.observeBookmarked(url).first()) {
-                bookmarkDao.deleteByUrl(url)
-            } else {
-                bookmarkDao.insert(
-                    BookmarkRecord(
-                        url = url,
-                        title = tab.title.ifBlank { url },
-                        createdAt = System.currentTimeMillis()
-                    )
-                )
-            }
-        }
-    }
+    fun toggleBookmarkForActiveTab() = historyBookmarks.toggleBookmarkForActiveTab()
 
     fun openFromList(url: String) {
         _isHistoryVisible.value = false
@@ -263,85 +308,6 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
         tabManager.tabs.value
             .filter { android.net.Uri.parse(it.url).host?.lowercase() == key }
             .forEach { it.webView?.reload() }
-    }
-
-    val downloads = downloadCoordinator.allDownloads
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyList()
-        )
-
-    val activeDownloadProgress: StateFlow<Map<String, DownloadProgress>> =
-        downloadCoordinator.activeProgress
-
-    val mediaCandidates = tabManager.mediaCandidates
-    val tabsWithSegments = tabManager.tabsWithSegments
-
-    private val _isMediaSheetVisible = MutableStateFlow(false)
-    val isMediaSheetVisible: StateFlow<Boolean> = _isMediaSheetVisible.asStateFlow()
-
-    private val _isTabSwitcherVisible = MutableStateFlow(false)
-    val isTabSwitcherVisible: StateFlow<Boolean> = _isTabSwitcherVisible.asStateFlow()
-
-    private val _isIncognitoTabGroup = MutableStateFlow(false)
-    val isIncognitoTabGroup: StateFlow<Boolean> = _isIncognitoTabGroup.asStateFlow()
-
-    private val _findInPageState = MutableStateFlow(FindInPageState())
-    val findInPageState: StateFlow<FindInPageState> = _findInPageState.asStateFlow()
-
-    private val _fullscreenVideoState = MutableStateFlow<FullscreenVideoState?>(null)
-    val fullscreenVideoState: StateFlow<FullscreenVideoState?> = _fullscreenVideoState.asStateFlow()
-
-    private val _mediaContextMenu = MutableStateFlow<MediaContextMenuState?>(null)
-    val mediaContextMenu: StateFlow<MediaContextMenuState?> = _mediaContextMenu.asStateFlow()
-
-    private val _appLockEnabled = MutableStateFlow(securePrefs.appLockEnabled)
-    val appLockEnabled: StateFlow<Boolean> = _appLockEnabled.asStateFlow()
-
-    private val _lockIncognitoOnly = MutableStateFlow(securePrefs.lockIncognitoOnly)
-    val lockIncognitoOnly: StateFlow<Boolean> = _lockIncognitoOnly.asStateFlow()
-
-    init {
-        tabManager.onFullscreenShowListener = { view, callback ->
-            _fullscreenVideoState.value = FullscreenVideoState(view, callback)
-        }
-        tabManager.onFullscreenHideListener = {
-            exitFullscreenVideo()
-        }
-        tabManager.onMediaLongPressListener = { url ->
-            _mediaContextMenu.value = MediaContextMenuState(url)
-        }
-        tabManager.onBlobEventListener = { tabId, event ->
-            downloadCoordinator.handleBlobEvent(tabId, event)
-        }
-        tabManager.onHistoryPageVisited = { url, title ->
-            if (securePrefs.saveHistoryEnabled) {
-                viewModelScope.launch {
-                    historyDao.insert(
-                        HistoryRecord(url, title.ifBlank { url }, System.currentTimeMillis())
-                    )
-                }
-            }
-        }
-        tabManager.onHistoryTitleUpdated = { url, title ->
-            if (securePrefs.saveHistoryEnabled) {
-                viewModelScope.launch {
-                    historyDao.updateTitleAndTime(url, title, System.currentTimeMillis())
-                }
-            }
-        }
-        // If the last incognito tab disappears while locked in
-        // incognito-only mode, the lock no longer applies
-        viewModelScope.launch {
-            tabs.collect { list ->
-                if (appLock.isLocked.value &&
-                    !appLock.shouldLock(list.any { it.isIncognito })
-                ) {
-                    appLock.unlock()
-                }
-            }
-        }
     }
 
     // App lock actions -----------------------------------------------------------
@@ -531,17 +497,7 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun pauseDownload(id: String) = downloadCoordinator.pause(id)
 
-    fun resumeDownload(id: String) {
-        downloadCoordinator.resume(id)
-        // Blob transfers need the fetch script re-injected into the page
-        val blobTabId = downloadCoordinator.blobJobTabId(id)
-        if (blobTabId != null) {
-            val record = downloads.value.find { it.id == id }
-            if (record != null) {
-                injectBlobFetch(id, record.url, blobTabId)
-            }
-        }
-    }
+    fun resumeDownload(id: String) = mediaController.resumeDownload(id)
 
     fun cancelDownload(id: String) = downloadCoordinator.cancel(id)
 
@@ -569,11 +525,13 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun backfillThumbnail(record: DownloadRecord) = mediaController.backfillThumbnail(record)
+
     // Media sniffer actions
     fun showMediaSheet() {
         // Re-run the DOM scan in case content appeared after PageFinished
         tabManager.resniffActiveTab()
-        refreshStreamQualities()
+        mediaController.refreshStreamQualities()
         _isMediaSheetVisible.value = true
     }
 
@@ -585,187 +543,13 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
         return tabManager.segmentRegistry.captureFor(activeTabId.value)
     }
 
-    // HLS quality metadata -----------------------------------------------------------
-
-    /**
-     * Variant playlists with parsed quality (RESOLUTION/BANDWIDTH), keyed by
-     * master playlist URL. Fetched lazily when the media sheet opens.
-     */
-    private val _variantQuality = MutableStateFlow<Map<String, List<VariantQuality>>>(emptyMap())
-
-    val variantQuality: StateFlow<Map<String, List<VariantQuality>>> =
-        _variantQuality.asStateFlow()
-
-    private val variantQualityCache =
-        java.util.concurrent.ConcurrentHashMap<String, List<VariantQuality>>()
-    private var variantQualityJob: Job? = null
-
-    private fun refreshStreamQualities() {
-        val capture = tabManager.segmentRegistry.captureFor(activeTabId.value)
-        val pending = capture.streamGroups
-            .filter { it.kind == MediaTypes.HLS }
-            .map { it.best.url }
-            .filter { !variantQualityCache.containsKey(it) }
-        if (pending.isEmpty()) {
-            _variantQuality.value = variantQualityCache.toMap()
-            return
-        }
-        variantQualityJob?.cancel()
-        variantQualityJob = viewModelScope.launch {
-            pending.forEach { url ->
-                val variants = fetchVariantQuality(url)
-                if (variants.isNotEmpty()) {
-                    variantQualityCache[url] = variants
-                }
-            }
-            _variantQuality.value = variantQualityCache.toMap()
-        }
-    }
-
-    /** Fetches + parses a master playlist; empty list on any failure. */
-    private suspend fun fetchVariantQuality(masterUrl: String): List<VariantQuality> =
-        withContext(Dispatchers.IO) {
-            try {
-                val tab = activeTab.value
-                val headers = DownloadRequest.pageHeaders(
-                    pageUrl = tab?.url,
-                    targetUrl = masterUrl,
-                    userAgent = tab?.webView?.settings?.userAgentString
-                )
-                val request = okhttp3.Request.Builder()
-                    .url(masterUrl)
-                    .apply { headers.forEach { (name, value) -> header(name, value) } }
-                    .build()
-                downloadCoordinator.client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) return@use emptyList()
-                    val body = response.body?.string() ?: return@use emptyList()
-                    val playlist = M3U8Parser.parse(body, masterUrl)
-                    (playlist as? HlsPlaylist.Master)?.variants
-                        ?.sortedByDescending { it.bandwidth }
-                        ?.map { VariantQuality(it.url, it.bandwidth, it.resolution) }
-                        ?: emptyList()
-                }
-            } catch (_: Exception) {
-                emptyList()
-            }
-        }
-
-    fun downloadMediaCandidate(candidate: MediaCandidate) {
-        if (candidate.type == MediaTypes.BLOB) {
-            downloadBlob(candidate.url, candidate)
-            return
-        }
-        if (candidate.type == MediaTypes.HLS) {
-            downloadHlsStream(
-                playlistUrl = candidate.url,
-                qualityLabel = MediaNaming.qualityLabel(candidate.height),
-                thumbnailUrl = candidate.posterUrl
-            )
-            return
-        }
-        startMediaDownload(
-            url = candidate.url,
-            thumbnailUrl = candidate.posterUrl,
-            qualityLabel = MediaNaming.qualityLabel(candidate.height),
-            sourceHost = MediaNaming.shortHost(candidate.url)
-        )
-        hideMediaSheet()
-    }
+    fun downloadMediaCandidate(candidate: MediaCandidate) = mediaController.downloadMediaCandidate(candidate)
 
     fun downloadHlsStream(
         playlistUrl: String,
         qualityLabel: String? = null,
         thumbnailUrl: String? = null
-    ) {
-        startHlsDownload(playlistUrl, qualityLabel, thumbnailUrl, showToast = true)
-        hideMediaSheet()
-    }
-
-    private fun startHlsDownload(
-        playlistUrl: String,
-        qualityLabel: String? = null,
-        thumbnailUrl: String? = null,
-        showToast: Boolean
-    ) {
-        val tab = activeTab.value
-        val headers = DownloadRequest.pageHeaders(
-            pageUrl = tab?.url,
-            targetUrl = playlistUrl,
-            userAgent = tab?.webView?.settings?.userAgentString
-        )
-        // Skip generic playlist names (index/playlist/chunklist): use the nearest
-        // meaningful path segment, else host + timestamp so files stay distinguishable
-        val base = MediaNaming.smartBaseName(playlistUrl).ifBlank {
-            "video-${MediaNaming.shortHost(playlistUrl).ifBlank { "stream" }}-${System.currentTimeMillis() / 1000}"
-        }
-        val fileName = DownloadStorage.sanitizeFileName(base) + ".mp4"
-        downloadCoordinator.enqueueHls(
-            url = playlistUrl,
-            headers = headers,
-            fileName = fileName,
-            thumbnailUrl = thumbnailUrl,
-            qualityLabel = qualityLabel,
-            sourceHost = MediaNaming.shortHost(playlistUrl)
-        )
-        if (showToast) {
-            android.widget.Toast.makeText(
-                getApplication(), "Stream download started", android.widget.Toast.LENGTH_SHORT
-            ).show()
-        }
-    }
-
-    /**
-     * Downloads a blob: URL by streaming it out of the page in chunks.
-     * The source page must stay open until the transfer finishes.
-     */
-    fun downloadBlob(blobUrl: String, candidate: MediaCandidate? = null) {
-        startBlobDownload(
-            blobUrl = blobUrl,
-            thumbnailUrl = candidate?.posterUrl,
-            qualityLabel = MediaNaming.qualityLabel(candidate?.height ?: 0)
-        )
-        hideMediaSheet()
-        android.widget.Toast.makeText(
-            getApplication(), "Download started — keep this page open", android.widget.Toast.LENGTH_SHORT
-        ).show()
-    }
-
-    private fun startBlobDownload(
-        blobUrl: String,
-        thumbnailUrl: String? = null,
-        qualityLabel: String? = null
-    ): String? {
-        val tab = activeTab.value
-        val tabId = tab?.id ?: return null
-        val headers = DownloadRequest.pageHeaders(
-            pageUrl = tab?.url,
-            targetUrl = tab?.url ?: blobUrl
-        )
-        val host = try {
-            android.net.Uri.parse(tab?.url).host
-        } catch (_: Exception) {
-            null
-        } ?: "video"
-        val fileName = DownloadStorage.sanitizeFileName("video-$host-${System.currentTimeMillis() / 1000}") + ".mp4"
-        val id = downloadCoordinator.enqueueBlob(
-            blobUrl = blobUrl,
-            tabId = tabId,
-            headers = headers,
-            fileName = fileName,
-            thumbnailUrl = thumbnailUrl,
-            qualityLabel = qualityLabel,
-            sourceHost = MediaNaming.shortHost(tab?.url ?: "").ifBlank { null }
-        )
-        injectBlobFetch(id, blobUrl, tabId)
-        return id
-    }
-
-    private fun injectBlobFetch(jobKey: String, blobUrl: String, tabId: String) {
-        val webView = tabManager.tabs.value.find { it.id == tabId }?.webView
-            ?: tabManager.getActiveTab()?.webView
-            ?: return
-        webView.evaluateJavascript(MediaSniffer.fetchBlobScript(jobKey, blobUrl), null)
-    }
+    ) = mediaController.downloadHlsStream(playlistUrl, qualityLabel, thumbnailUrl)
 
     fun dismissMediaContextMenu() {
         _mediaContextMenu.value = null
@@ -774,47 +558,7 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
     fun downloadFromContextMenu() {
         val url = _mediaContextMenu.value?.url ?: return
         _mediaContextMenu.value = null
-        startMediaDownload(url)
-    }
-
-    private fun startMediaDownload(
-        url: String,
-        thumbnailUrl: String? = null,
-        qualityLabel: String? = null,
-        sourceHost: String? = null,
-        showToast: Boolean = true
-    ) {
-        val tab = activeTab.value
-        val headers = DownloadRequest.pageHeaders(
-            pageUrl = tab?.url,
-            targetUrl = url,
-            userAgent = tab?.webView?.settings?.userAgentString
-        )
-        var fileName = DownloadStorage.fileNameFromHeaders(url, null, null)
-        // Generic names (index.mp4, video.mp4) get a host prefix so parallel
-        // downloads stay distinguishable in the list
-        val nameBase = fileName.substringBeforeLast('.')
-        if (MediaNaming.isGenericToken(nameBase)) {
-            val host = MediaNaming.shortHost(url).ifBlank { "media" }
-            val ext = DownloadStorage.fileExtensionOf(fileName).ifBlank { "mp4" }
-            fileName = DownloadStorage.sanitizeFileName("$host-$nameBase") + ".$ext"
-        }
-        downloadCoordinator.enqueue(
-            DownloadRequest(
-                url = url,
-                headers = headers,
-                fileName = fileName,
-                mimeType = null,
-                thumbnailUrl = thumbnailUrl,
-                qualityLabel = qualityLabel,
-                sourceHost = sourceHost ?: MediaNaming.shortHost(url).ifBlank { null }
-            )
-        )
-        if (showToast) {
-            android.widget.Toast.makeText(
-                getApplication(), "Download started", android.widget.Toast.LENGTH_SHORT
-            ).show()
-        }
+        mediaController.downloadUrl(url)
     }
 
     fun clearBrowsingData(
@@ -839,72 +583,26 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopScreenRecording() = com.diego.kiki.screenrec.ScreenRecorder.stop()
 
-    /**
-     * One-shot local thumbnail extraction for completed downloads that predate
-     * thumbnail support (the coordinator dedupes attempts per process run).
-     */
-    fun backfillThumbnail(record: DownloadRecord) {
-        if (record.status != DownloadStatus.COMPLETED || record.thumbnailPath != null) return
-        viewModelScope.launch(Dispatchers.IO) {
-            downloadCoordinator.attachThumbnail(record.id)
-        }
-    }
-
     // Auto-scroll & bulk download ---------------------------------------------------
-
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val autoScroller = AutoScroller(viewModelScope) { tabId ->
-        tabManager.tabs.value.find { it.id == tabId }
-    }
-
-    private val _isAutoScrollPanelVisible = MutableStateFlow(false)
-    val isAutoScrollPanelVisible: StateFlow<Boolean> = _isAutoScrollPanelVisible.asStateFlow()
-
-    private val _isBulkSheetVisible = MutableStateFlow(false)
-    val isBulkSheetVisible: StateFlow<Boolean> = _isBulkSheetVisible.asStateFlow()
-
-    /** Swipes in a row without a single new capture before we stop. */
-    private val smartStopAfterSwipes = 5
-
-    private var lastCaptureCount = 0
-
-    init {
-        autoScroller.onSwipe = { tabId -> onAutoScrollSwipe(tabId) }
-        autoScroller.onFinished = { _, reason -> onAutoScrollFinished(reason) }
-    }
 
     fun showAutoScrollPanel() {
         _isAutoScrollPanelVisible.value = true
     }
 
     fun hideAutoScrollPanel() {
-        autoScroller.cancelSetup()
+        autoScrollController.cancelSetup()
         _isAutoScrollPanelVisible.value = false
     }
 
-    fun selectAutoScrollInterval(intervalMs: Long) {
-        autoScroller.setInterval(intervalMs)
-    }
+    fun selectAutoScrollInterval(intervalMs: Long) = autoScrollController.setInterval(intervalMs)
 
-    fun beginAutoScrollSetup() {
-        val tabId = activeTabId.value
-        if (tabId.isEmpty()) return
-        autoScroller.beginSetup(tabId, autoScroller.state.value.intervalMs)
-    }
+    fun beginAutoScrollSetup() = autoScrollController.beginSetup()
 
-    fun cancelAutoScrollSetup() {
-        autoScroller.cancelSetup()
-    }
+    fun cancelAutoScrollSetup() = autoScrollController.cancelSetup()
 
-    fun startAutoScroll(pins: GesturePins) {
-        val tabId = activeTabId.value
-        if (tabId.isEmpty()) return
-        autoScroller.start(tabId, autoScroller.state.value.intervalMs, pins)
-    }
+    fun startAutoScroll(pins: GesturePins) = autoScrollController.start(pins)
 
-    fun stopAutoScroll() {
-        autoScroller.stop(AutoScroller.StopReason.MANUAL)
-    }
+    fun stopAutoScroll() = autoScrollController.stop()
 
     fun showBulkSheet() {
         _isBulkSheetVisible.value = true
@@ -914,125 +612,19 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
         _isBulkSheetVisible.value = false
     }
 
-    /**
-     * Everything currently captured for the active tab as bulk-download rows,
-     * deduped by URL. DASH is excluded (no pipeline), images skipped.
-     */
-    fun buildBulkItems(): List<BulkItem> {
-        val tabId = activeTabId.value
-        val out = LinkedHashMap<String, BulkItem>()
-        val capture = tabManager.segmentRegistry.captureFor(tabId)
-        // One bulk entry per stream (its best playlist), not per variant
-        capture.streamGroups.forEach { group ->
-            if (group.kind == MediaTypes.HLS) {
-                out.putIfAbsent(
-                    group.best.url,
-                    BulkItem(group.best.url, MediaNaming.displayTitle(group.best.url), MediaTypes.HLS)
-                )
-            }
-        }
-        val streamUrls = capture.streamGroups.flatMap { group -> group.variants.map { it.url } }.toSet()
-        capture.mediaGroups.forEach { g ->
-            out.putIfAbsent(g.url, BulkItem(g.url, MediaNaming.displayTitle(g.url), g.kind))
-        }
-        tabManager.mediaCandidates.value[tabId]?.forEach { c ->
-            if (c.type == MediaTypes.IMAGE || c.type == MediaTypes.DASH) return@forEach
-            if (c.url in streamUrls) return@forEach
-            out.putIfAbsent(
-                c.url,
-                BulkItem(c.url, MediaNaming.displayTitle(c.url, fallback = MediaTypes.label(c.type)), c.type)
-            )
-        }
-        return out.values.toList()
-    }
+    fun buildBulkItems() = mediaController.buildBulkItems()
 
-    fun bulkDownload(items: List<BulkItem>) {
-        if (items.isEmpty()) return
-        var started = 0
-        var blobs = 0
-        items.forEach { item ->
-            val (poster, quality, host) = bulkMetadataFor(item.url)
-            when (item.type) {
-                MediaTypes.HLS -> {
-                    startHlsDownload(item.url, quality, poster, showToast = false)
-                    started++
-                }
-
-                MediaTypes.BLOB -> {
-                    if (startBlobDownload(item.url, poster, quality) != null) {
-                        blobs++
-                        started++
-                    }
-                }
-
-                MediaTypes.DASH -> Unit // unsupported pipeline
-
-                else -> {
-                    startMediaDownload(item.url, poster, quality, host, showToast = false)
-                    started++
-                }
-            }
-        }
+    fun bulkDownload(items: List<com.diego.kiki.download.BulkItem>) {
+        mediaController.bulkDownload(items)
         _isBulkSheetVisible.value = false
-        android.widget.Toast.makeText(
-            getApplication(),
-            if (blobs > 0) {
-                "$started downloads started — keep this page open until blob videos finish"
-            } else {
-                "$started downloads started"
-            },
-            android.widget.Toast.LENGTH_LONG
-        ).show()
-    }
-
-    /**
-     * Poster / quality / host for a bulk item, looked up from the tab's DOM
-     * candidates and parsed HLS variants (whatever was captured at sniff time).
-     */
-    private fun bulkMetadataFor(url: String): Triple<String?, String?, String?> {
-        val candidate = tabManager.mediaCandidates.value[activeTabId.value]
-            ?.find { it.url == url }
-        val quality = MediaNaming.qualityLabel(candidate?.height ?: 0)
-            ?: variantQualityCache[url]?.firstOrNull()?.let {
-                MediaNaming.qualityLabelFor(it.resolution, it.bandwidth)
-            }
-        val host = MediaNaming.shortHost(url).ifBlank {
-            MediaNaming.shortHost(activeTab.value?.url ?: "")
-        }
-        return Triple(candidate?.posterUrl, quality, host.ifBlank { null })
-    }
-
-    private fun captureCountFor(tabId: String): Int {
-        val domCount = tabManager.mediaCandidates.value[tabId]?.size ?: 0
-        val capture = tabManager.segmentRegistry.captureFor(tabId)
-        return domCount + capture.playlists.size + capture.mediaGroups.size + capture.segmentGroups.size
-    }
-
-    private fun onAutoScrollSwipe(tabId: String) {
-        // Re-scan the DOM each swipe so the current slide's video is
-        // captured while it is still mounted (blob URLs get revoked later)
-        tabManager.tabs.value.find { it.id == tabId }?.webView
-            ?.evaluateJavascript(MediaSniffer.INJECT_JS, null)
-
-        val count = captureCountFor(tabId)
-        if (count <= lastCaptureCount) {
-            val stalled = autoScroller.state.value.stalledSwipes + 1
-            autoScroller.setStalled(stalled)
-            if (stalled >= smartStopAfterSwipes) {
-                autoScroller.stop(AutoScroller.StopReason.SMART_STOP)
-            }
-        } else {
-            autoScroller.setStalled(0)
-        }
-        lastCaptureCount = count
     }
 
     private fun onAutoScrollFinished(reason: AutoScroller.StopReason) {
-        lastCaptureCount = 0
+        autoScrollController.resetCaptureTracking()
         when (reason) {
             AutoScroller.StopReason.SMART_STOP -> {
                 _isAutoScrollPanelVisible.value = false
-                if (buildBulkItems().isNotEmpty()) {
+                if (mediaController.buildBulkItems().isNotEmpty()) {
                     _isBulkSheetVisible.value = true
                 } else {
                     android.widget.Toast.makeText(
@@ -1049,7 +641,6 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
             AutoScroller.StopReason.MANUAL -> Unit // panel stays open
         }
     }
-
 
     fun exitFullscreenVideo() {
         _fullscreenVideoState.value?.callback?.onCustomViewHidden()
