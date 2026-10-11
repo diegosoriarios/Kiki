@@ -74,6 +74,9 @@ fun DownloadsScreen(
     val activeProgress by viewModel.activeDownloadProgress.collectAsState()
     val context = LocalContext.current
     var showClearAllDialog by remember { mutableStateOf(false) }
+    // Videos always on top (newest first); HLS streams listed beneath them
+    val videoRecords = records.filter { it.downloadType != DownloadCoordinator.TYPE_HLS }
+    val hlsRecords = records.filter { it.downloadType == DownloadCoordinator.TYPE_HLS }
 
     // Backfill local thumbnails for completed downloads that predate them
     LaunchedEffect(records) {
@@ -139,31 +142,33 @@ fun DownloadsScreen(
                 }
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(records, key = { it.id }) { record ->
-                        DownloadRow(
-                            record = record,
-                            liveProgress = activeProgress[record.id],
-                            onPause = { viewModel.pauseDownload(record.id) },
-                            onResume = { viewModel.resumeDownload(record.id) },
-                            onCancel = { viewModel.cancelDownload(record.id) },
-                            onDelete = { viewModel.deleteDownload(record) },
-                            onOpen = {
-                                val file = File(record.filePath)
-                                if (file.exists() && !DownloadIntents.openFile(
-                                        context, file, record.mimeType
-                                    )
-                                ) {
-                                    Toast.makeText(context, "No app can open this file", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            onShare = {
-                                val file = File(record.filePath)
-                                if (file.exists()) {
-                                    DownloadIntents.shareFile(context, file, record.mimeType)
-                                }
-                            },
-                            onExport = { viewModel.exportDownload(record) }
-                        )
+                    listOf(videoRecords, hlsRecords).forEach { group ->
+                        items(group, key = { it.id }) { record ->
+                            DownloadRow(
+                                record = record,
+                                liveProgress = activeProgress[record.id],
+                                onPause = { viewModel.pauseDownload(record.id) },
+                                onResume = { viewModel.resumeDownload(record.id) },
+                                onCancel = { viewModel.cancelDownload(record.id) },
+                                onDelete = { viewModel.deleteDownload(record) },
+                                onOpen = {
+                                    val file = File(record.filePath)
+                                    if (file.exists() && !DownloadIntents.openFile(
+                                            context, file, record.mimeType
+                                        )
+                                    ) {
+                                        Toast.makeText(context, "No app can open this file", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                onShare = {
+                                    val file = File(record.filePath)
+                                    if (file.exists()) {
+                                        DownloadIntents.shareFile(context, file, record.mimeType)
+                                    }
+                                },
+                                onExport = { viewModel.exportDownload(record) }
+                            )
+                        }
                     }
                 }
             }
