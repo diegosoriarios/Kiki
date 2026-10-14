@@ -63,6 +63,7 @@ fun MediaCandidatesSheet(
     variantQuality: Map<String, List<VariantQuality>> = emptyMap(),
     activeVideo: MediaCandidate? = null,
     pageTitle: String? = null,
+    pageUrl: String? = null,
     allMediaByTab: Map<String, List<MediaCandidate>> = emptyMap(),
     allCapturesByTab: Map<String, SegmentCandidateRegistry.TabMediaCapture> = emptyMap(),
     allVariantQualitiesByTab: Map<String, Map<String, List<VariantQuality>>> = emptyMap(),
@@ -99,6 +100,7 @@ fun MediaCandidatesSheet(
                     variantQuality = variantQuality,
                     activeVideo = activeVideo,
                     pageTitle = pageTitle,
+                    pageUrl = pageUrl,
                     onDownload = onDownload,
                     onDownloadHls = onDownloadHls,
                     onOpenBulk = onOpenBulk
@@ -124,6 +126,7 @@ private fun CurrentPageTab(
     variantQuality: Map<String, List<VariantQuality>>,
     activeVideo: MediaCandidate?,
     pageTitle: String?,
+    pageUrl: String?,
     onDownload: (MediaCandidate) -> Unit,
     onDownloadHls: (url: String, qualityLabel: String?, posterUrl: String?) -> Unit,
     onOpenBulk: () -> Unit
@@ -193,7 +196,7 @@ private fun CurrentPageTab(
                         SectionHeader("Streams — saved as MP4")
                     }
                     items(capture.streamGroups, key = { "stream_" + it.best.url }) { group ->
-                        val isActive = isStreamActive(group, activeVideo)
+                        val isActive = isStreamActive(group, activeVideo, capture.streamGroups, pageUrl)
                         StreamRow(
                             group = group,
                             parsed = variantQuality[group.best.url].orEmpty(),
@@ -601,13 +604,36 @@ private fun streamPoster(
 /** Check if a stream group matches the currently playing video. */
 private fun isStreamActive(
     group: SegmentCandidateRegistry.StreamGroup,
-    activeVideo: MediaCandidate?
+    activeVideo: MediaCandidate?,
+    allStreamGroups: List<SegmentCandidateRegistry.StreamGroup>,
+    pageUrl: String?
 ): Boolean {
     if (activeVideo == null) return false
-    // Check if active video's URL matches stream's best URL
+    
+    // Direct URL match (works for non-blob videos with direct HLS src)
     if (urlsMatch(activeVideo.url, group.best.url)) return true
-    // Check if active video's URL matches any variant URL
-    return group.variants.any { urlsMatch(activeVideo.url, it.url) }
+    if (group.variants.any { urlsMatch(activeVideo.url, it.url) }) return true
+    
+    // Blob URL fallback strategies (for hls.js and similar players)
+    if (activeVideo.url.startsWith("blob:") && activeVideo.isPlaying) {
+        // Strategy 1: Single stream on page - almost certainly the one
+        if (allStreamGroups.size == 1 && allStreamGroups.first() === group) return true
+        
+        // Strategy 2: Host correlation with page origin
+        if (pageUrl != null) {
+            val pageHost = extractHost(pageUrl)
+            if (pageHost.isNotBlank() && group.host == pageHost) return true
+        }
+        
+        // Strategy 3: If multiple streams, pick the most recently active
+        // (the one with the most segments captured = most recently fetching)
+        if (allStreamGroups.size > 1) {
+            val mostRecent = allStreamGroups.maxByOrNull { it.segmentCount }
+            if (mostRecent === group) return true
+        }
+    }
+    
+    return false
 }
 
 /** Compare URLs ignoring query parameters (handles token differences). */
@@ -615,6 +641,15 @@ private fun urlsMatch(url1: String, url2: String): Boolean {
     val base1 = url1.substringBefore('?').substringBefore('#')
     val base2 = url2.substringBefore('?').substringBefore('#')
     return base1 == base2
+}
+
+/** Extract host from URL for correlation matching. */
+private fun extractHost(url: String): String {
+    return try {
+        java.net.URI(url).host?.lowercase()?.removePrefix("www.") ?: ""
+    } catch (_: Exception) {
+        ""
+    }
 }
 
 // File groups (videos/audio/blobs single rows; same-stem images collapsed) ------
