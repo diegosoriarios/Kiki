@@ -53,6 +53,12 @@ class TabManager(
 
     private var defaultUserAgent: String = ""
 
+    private val mediaMetadataCache = java.util.concurrent.ConcurrentHashMap<String, MediaCandidate>()
+
+    private val replaceModeTabs = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    var onSpaNavigationListener: ((tabId: String, url: String) -> Unit)? = null
+
     // Callback for video fullscreen events from WebChromeClient
     var onFullscreenShowListener: ((View, android.webkit.WebChromeClient.CustomViewCallback) -> Unit)? = null
     var onFullscreenHideListener: (() -> Unit)? = null
@@ -117,7 +123,8 @@ class TabManager(
                         }
                         segmentRegistry.addPlaylist(id, url, kind, role)
                     },
-                    onBlobEvent = { id, event -> onBlobEventListener?.invoke(id, event) }
+                    onBlobEvent = { id, event -> onBlobEventListener?.invoke(id, event) },
+                    onSpaNavigation = { id, url -> handleSpaNavigation(id, url) }
                 ).Bridge(),
                 MediaSniffer.BRIDGE_NAME
             )
@@ -425,6 +432,10 @@ class TabManager(
     }
 
     private fun mergeMediaCandidates(tabId: String, incoming: List<MediaCandidate>) {
+        if (replaceModeTabs.remove(tabId) == true) {
+            replaceMediaCandidates(tabId, incoming)
+            return
+        }
         _mediaCandidates.update { current ->
             val existing = current[tabId] ?: emptyList()
             val now = System.currentTimeMillis()
@@ -443,6 +454,7 @@ class TabManager(
                         currentTime = candidate.currentTime.takeIf { it > 0 } ?: previous.currentTime
                     )
                 }
+                mediaMetadataCache[candidate.url] = candidate
             }
             var merged = byUrl.values.sortedByDescending { it.lastSeenAt }
             val blobs = merged.filter { it.url.startsWith("blob:") }
@@ -456,6 +468,40 @@ class TabManager(
             }
             current + (tabId to merged)
         }
+    }
+
+    private fun replaceMediaCandidates(tabId: String, incoming: List<MediaCandidate>) {
+        _mediaCandidates.update { current ->
+            val now = System.currentTimeMillis()
+            val byUrl = mutableMapOf<String, MediaCandidate>()
+            incoming.forEach { candidate ->
+                val cached = mediaMetadataCache[candidate.url]
+                byUrl[candidate.url] = candidate.copy(
+                    lastSeenAt = now,
+                    posterUrl = candidate.posterUrl ?: cached?.posterUrl,
+                    width = candidate.width.takeIf { it > 0 } ?: cached?.width ?: 0,
+                    height = candidate.height.takeIf { it > 0 } ?: cached?.height ?: 0
+                )
+                mediaMetadataCache[candidate.url] = candidate
+            }
+            var replaced = byUrl.values.sortedByDescending { it.lastSeenAt }
+            val blobs = replaced.filter { it.url.startsWith("blob:") }
+            if (blobs.size > MAX_BLOB_CANDIDATES_PER_TAB) {
+                val evict = blobs.asSequence()
+                    .sortedByDescending { it.lastSeenAt }
+                    .drop(MAX_BLOB_CANDIDATES_PER_TAB)
+                    .map { it.url }
+                    .toSet()
+                replaced = replaced.filter { it.url !in evict }
+            }
+            current + (tabId to replaced)
+        }
+    }
+
+    private fun handleSpaNavigation(tabId: String, url: String) {
+        _mediaCandidates.update { it - tabId }
+        segmentRegistry.clear(tabId)
+        onSpaNavigationListener?.invoke(tabId, url)
     }
 
     private fun extractLongPressMediaUrl(hit: WebView.HitTestResult): String? {
@@ -535,6 +581,7 @@ class TabManager(
         val tab = getActiveTab() ?: return
         val url = tab.url
         if (url.startsWith("http://") || url.startsWith("https://")) {
+            replaceModeTabs[tab.id] = true
             tab.webView?.evaluateJavascript(MediaSniffer.INJECT_JS, null)
             tab.webView?.evaluateJavascript(MediaSniffer.HOOKS_JS, null)
         }

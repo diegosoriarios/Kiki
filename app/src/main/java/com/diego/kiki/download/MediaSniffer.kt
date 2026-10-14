@@ -24,12 +24,14 @@ sealed class BlobEvent {
  * - XHR/fetch playlist detector (#EXTM3U / <MPD responses, any URL shape)
  * - URL.createObjectURL tracker (data-backed blobs are downloadable)
  * - Blob chunk transfer for the blob-URL download bridge
+ * - SPA navigation detector (pushState/replaceState/popstate)
  */
 class MediaSniffer(
     private val tabId: String,
     private val onCandidates: (tabId: String, candidates: List<MediaCandidate>) -> Unit,
     private val onPlaylist: (tabId: String, url: String, kind: String, isMaster: Boolean) -> Unit,
-    private val onBlobEvent: (tabId: String, event: BlobEvent) -> Unit
+    private val onBlobEvent: (tabId: String, event: BlobEvent) -> Unit,
+    private val onSpaNavigation: (tabId: String, url: String) -> Unit = { _, _ -> }
 ) {
 
     /** Called from the WebView JS bridge thread. */
@@ -77,6 +79,13 @@ class MediaSniffer(
         @android.webkit.JavascriptInterface
         fun onBlobError(jobKey: String, message: String) {
             onBlobEvent(tabId, BlobEvent.Error(jobKey, message))
+        }
+
+        @android.webkit.JavascriptInterface
+        fun onSpaNavigation(url: String) {
+            if (url.startsWith("http")) {
+                onSpaNavigation(tabId, url)
+            }
         }
     }
 
@@ -202,6 +211,41 @@ class MediaSniffer(
                             return u;
                         };
                     }
+                    var lastUrl = location.href;
+                    var nativePushState = history.pushState;
+                    if (nativePushState) {
+                        history.pushState = function() {
+                            var result = nativePushState.apply(this, arguments);
+                            try {
+                                if (location.href !== lastUrl) {
+                                    lastUrl = location.href;
+                                    window.KikiMedia.onSpaNavigation(lastUrl);
+                                }
+                            } catch (e) {}
+                            return result;
+                        };
+                    }
+                    var nativeReplaceState = history.replaceState;
+                    if (nativeReplaceState) {
+                        history.replaceState = function() {
+                            var result = nativeReplaceState.apply(this, arguments);
+                            try {
+                                if (location.href !== lastUrl) {
+                                    lastUrl = location.href;
+                                    window.KikiMedia.onSpaNavigation(lastUrl);
+                                }
+                            } catch (e) {}
+                            return result;
+                        };
+                    }
+                    window.addEventListener('popstate', function() {
+                        try {
+                            if (location.href !== lastUrl) {
+                                lastUrl = location.href;
+                                window.KikiMedia.onSpaNavigation(lastUrl);
+                            }
+                        } catch (e) {}
+                    });
                 } catch (e) {}
             })();
         """.trimIndent()
