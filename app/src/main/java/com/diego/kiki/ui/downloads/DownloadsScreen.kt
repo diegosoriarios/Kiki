@@ -1,7 +1,8 @@
 package com.diego.kiki.ui.downloads
 
 import android.widget.Toast
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +19,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
@@ -33,6 +36,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.AlertDialog
@@ -65,6 +69,7 @@ import com.diego.kiki.ui.KikiViewModel
 import java.io.File
 import java.util.Locale
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DownloadsScreen(
     viewModel: KikiViewModel,
@@ -74,6 +79,10 @@ fun DownloadsScreen(
     val activeProgress by viewModel.activeDownloadProgress.collectAsState()
     val context = LocalContext.current
     var showClearAllDialog by remember { mutableStateOf(false) }
+    var isSelectionMode by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    var showDeleteSelectedDialog by remember { mutableStateOf(false) }
+    
     // Videos always on top (newest first); HLS streams listed beneath them
     val videoRecords = records.filter { it.downloadType != DownloadCoordinator.TYPE_HLS }
     val hlsRecords = records.filter { it.downloadType == DownloadCoordinator.TYPE_HLS }
@@ -83,6 +92,16 @@ fun DownloadsScreen(
         records.forEach { record ->
             if (record.status == DownloadStatus.COMPLETED && record.thumbnailPath == null) {
                 viewModel.backfillThumbnail(record)
+            }
+        }
+    }
+
+    // Exit selection mode when records change (e.g., after delete)
+    LaunchedEffect(records.size) {
+        if (selectedIds.isNotEmpty()) {
+            selectedIds = selectedIds.filter { id -> records.any { it.id == id } }.toSet()
+            if (selectedIds.isEmpty()) {
+                isSelectionMode = false
             }
         }
     }
@@ -97,24 +116,92 @@ fun DownloadsScreen(
                 .statusBarsPadding()
                 .navigationBarsPadding()
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            if (isSelectionMode) {
+                // Selection mode top bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = {
+                        isSelectionMode = false
+                        selectedIds = emptySet()
+                    }) {
+                        Icon(Icons.Default.Close, contentDescription = "Exit selection")
+                    }
+                    Text(
+                        text = "${selectedIds.size} selected",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    // Select All checkbox
+                    val allSelected = selectedIds.size == records.size && records.isNotEmpty()
+                    IconButton(onClick = {
+                        selectedIds = if (allSelected) {
+                            emptySet()
+                        } else {
+                            records.map { it.id }.toSet()
+                        }
+                    }) {
+                        Icon(
+                            imageVector = if (allSelected) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                            contentDescription = if (allSelected) "Deselect all" else "Select all"
+                        )
+                    }
+                    // Export selected
+                    IconButton(
+                        onClick = {
+                            viewModel.exportDownloads(selectedIds)
+                            Toast.makeText(context, "Exporting ${selectedIds.size} files", Toast.LENGTH_SHORT).show()
+                            isSelectionMode = false
+                            selectedIds = emptySet()
+                        },
+                        enabled = selectedIds.isNotEmpty()
+                    ) {
+                        Icon(Icons.Default.SaveAlt, contentDescription = "Export selected")
+                    }
+                    // Share selected
+                    IconButton(
+                        onClick = {
+                            viewModel.shareDownloads(selectedIds)
+                            isSelectionMode = false
+                            selectedIds = emptySet()
+                        },
+                        enabled = selectedIds.isNotEmpty()
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = "Share selected")
+                    }
+                    // Delete selected
+                    IconButton(
+                        onClick = { showDeleteSelectedDialog = true },
+                        enabled = selectedIds.isNotEmpty()
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = "Delete selected")
+                    }
                 }
-                Text(
-                    text = "Downloads",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
-                if (records.isNotEmpty()) {
-                    IconButton(onClick = { showClearAllDialog = true }) {
-                        Icon(Icons.Default.DeleteSweep, contentDescription = "Clear all downloads")
+            } else {
+                // Normal mode top bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                    Text(
+                        text = "Downloads",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (records.isNotEmpty()) {
+                        IconButton(onClick = { showClearAllDialog = true }) {
+                            Icon(Icons.Default.DeleteSweep, contentDescription = "Clear all downloads")
+                        }
                     }
                 }
             }
@@ -147,6 +234,22 @@ fun DownloadsScreen(
                             DownloadRow(
                                 record = record,
                                 liveProgress = activeProgress[record.id],
+                                isSelectionMode = isSelectionMode,
+                                isSelected = selectedIds.contains(record.id),
+                                onToggleSelection = {
+                                    selectedIds = if (selectedIds.contains(record.id)) {
+                                        selectedIds - record.id
+                                    } else {
+                                        selectedIds + record.id
+                                    }
+                                    if (selectedIds.isNotEmpty() && !isSelectionMode) {
+                                        isSelectionMode = true
+                                    }
+                                },
+                                onLongPress = {
+                                    isSelectionMode = true
+                                    selectedIds = setOf(record.id)
+                                },
                                 onPause = { viewModel.pauseDownload(record.id) },
                                 onResume = { viewModel.resumeDownload(record.id) },
                                 onCancel = { viewModel.cancelDownload(record.id) },
@@ -201,12 +304,45 @@ fun DownloadsScreen(
             }
         )
     }
+
+    if (showDeleteSelectedDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteSelectedDialog = false },
+            title = { Text("Delete ${selectedIds.size} downloads?") },
+            text = {
+                Text(
+                    "Selected downloads will be removed from the app and their files deleted. " +
+                            "Copies already exported to your device's Downloads folder are kept."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteDownloads(selectedIds)
+                    Toast.makeText(context, "${selectedIds.size} downloads deleted", Toast.LENGTH_SHORT).show()
+                    showDeleteSelectedDialog = false
+                    isSelectionMode = false
+                    selectedIds = emptySet()
+                }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteSelectedDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 @Composable
 private fun DownloadRow(
     record: DownloadRecord,
     liveProgress: DownloadProgress?,
+    isSelectionMode: Boolean,
+    isSelected: Boolean,
+    onToggleSelection: () -> Unit,
+    onLongPress: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onCancel: () -> Unit,
@@ -223,10 +359,32 @@ private fun DownloadRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = status == DownloadStatus.COMPLETED, onClick = onOpen)
+            .combinedClickable(
+                onClick = {
+                    if (isSelectionMode) {
+                        onToggleSelection()
+                    } else if (status == DownloadStatus.COMPLETED) {
+                        onOpen()
+                    }
+                },
+                onLongClick = {
+                    if (!isSelectionMode) {
+                        onLongPress()
+                    }
+                }
+            )
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (isSelectionMode) {
+            Checkbox(
+                checked = isSelected,
+                onCheckedChange = { onToggleSelection() },
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.size(8.dp))
+        }
+        
         MediaThumbnail(
             model = thumbnailModelFor(record),
             icon = iconFor(record),
@@ -301,30 +459,32 @@ private fun DownloadRow(
             }
         }
 
-        Spacer(modifier = Modifier.size(8.dp))
+        if (!isSelectionMode) {
+            Spacer(modifier = Modifier.size(8.dp))
 
-        Row {
-            when (status) {
-                DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED -> {
-                    RowAction(Icons.Default.Pause, "Pause", onPause)
-                    RowAction(Icons.Default.Close, "Cancel", onCancel)
-                }
-                DownloadStatus.PAUSED -> {
-                    RowAction(Icons.Default.PlayArrow, "Resume", onResume)
-                    RowAction(Icons.Default.Close, "Cancel", onCancel)
-                }
-                DownloadStatus.FAILED -> {
-                    RowAction(Icons.Default.PlayArrow, "Retry", onResume)
-                    RowAction(Icons.Default.Delete, "Delete", onDelete)
-                }
-                DownloadStatus.COMPLETED -> {
-                    RowAction(Icons.Default.OpenInNew, "Open", onOpen)
-                    RowAction(Icons.Default.Share, "Share", onShare)
-                    RowAction(Icons.Default.SaveAlt, "Export", onExport)
-                    RowAction(Icons.Default.Delete, "Delete", onDelete)
-                }
-                DownloadStatus.CANCELLED -> {
-                    RowAction(Icons.Default.Delete, "Delete", onDelete)
+            Row {
+                when (status) {
+                    DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED -> {
+                        RowAction(Icons.Default.Pause, "Pause", onPause)
+                        RowAction(Icons.Default.Close, "Cancel", onCancel)
+                    }
+                    DownloadStatus.PAUSED -> {
+                        RowAction(Icons.Default.PlayArrow, "Resume", onResume)
+                        RowAction(Icons.Default.Close, "Cancel", onCancel)
+                    }
+                    DownloadStatus.FAILED -> {
+                        RowAction(Icons.Default.PlayArrow, "Retry", onResume)
+                        RowAction(Icons.Default.Delete, "Delete", onDelete)
+                    }
+                    DownloadStatus.COMPLETED -> {
+                        RowAction(Icons.Default.OpenInNew, "Open", onOpen)
+                        RowAction(Icons.Default.Share, "Share", onShare)
+                        RowAction(Icons.Default.SaveAlt, "Export", onExport)
+                        RowAction(Icons.Default.Delete, "Delete", onDelete)
+                    }
+                    DownloadStatus.CANCELLED -> {
+                        RowAction(Icons.Default.Delete, "Delete", onDelete)
+                    }
                 }
             }
         }

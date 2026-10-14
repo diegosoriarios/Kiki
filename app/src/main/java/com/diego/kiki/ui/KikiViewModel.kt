@@ -549,6 +549,65 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun exportDownloads(ids: Set<String>) {
+        viewModelScope.launch {
+            val records = downloads.value.filter { it.id in ids }
+            var successCount = 0
+            records.forEach { record ->
+                val file = java.io.File(record.filePath)
+                if (file.exists()) {
+                    val ok = com.diego.kiki.download.FileExporter.exportToDownloads(
+                        getApplication(), file, record.mimeType
+                    ) != null
+                    if (ok) successCount++
+                }
+            }
+            android.widget.Toast.makeText(
+                getApplication(),
+                if (successCount == records.size) "Exported $successCount files" 
+                else "Exported $successCount of ${records.size} files",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    fun deleteDownloads(ids: Set<String>) {
+        viewModelScope.launch {
+            val records = downloads.value.filter { it.id in ids }
+            records.forEach { record ->
+                downloadCoordinator.delete(record)
+            }
+        }
+    }
+
+    fun shareDownloads(ids: Set<String>) {
+        viewModelScope.launch {
+            val records = downloads.value.filter { it.id in ids }
+            val files = records.mapNotNull { record ->
+                val file = java.io.File(record.filePath)
+                if (file.exists()) file else null
+            }
+            if (files.isNotEmpty()) {
+                // Share multiple files
+                val intent = android.content.Intent(android.content.Intent.ACTION_SEND_MULTIPLE).apply {
+                    type = "*/*"
+                    putParcelableArrayListExtra(
+                        android.content.Intent.EXTRA_STREAM,
+                        ArrayList(files.map { androidx.core.content.FileProvider.getUriForFile(
+                            getApplication(),
+                            "${getApplication<android.app.Application>().packageName}.fileprovider",
+                            it
+                        ) })
+                    )
+                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                val shareIntent = android.content.Intent.createChooser(intent, "Share files")
+                shareIntent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                getApplication<android.app.Application>().startActivity(shareIntent)
+            }
+        }
+    }
+
     fun backfillThumbnail(record: DownloadRecord) = mediaController.backfillThumbnail(record)
 
     // Media sniffer actions
