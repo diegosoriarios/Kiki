@@ -42,6 +42,7 @@ import com.diego.kiki.ui.downloads.DownloadPill
 import com.diego.kiki.ui.downloads.DownloadsScreen
 import com.diego.kiki.ui.downloads.MediaCandidatesSheet
 import com.diego.kiki.ui.downloads.MediaThumbnail
+import com.diego.kiki.ui.downloads.PlayingVideoFab
 import com.diego.kiki.ui.history.HistoryScreen
 import com.diego.kiki.ui.settings.SettingsScreen
 import com.diego.kiki.ui.tabs.TabSwitcherScreen
@@ -288,6 +289,17 @@ fun BrowserScreen(
                             modifier = Modifier
                                 .align(Alignment.BottomEnd)
                                 .padding(16.dp)
+                        )
+                    }
+                    // Floating button for downloading the currently playing video
+                    val activeVideo = viewModel.getActiveVideoForCurrentTab()
+                    if (activeVideo != null && activeVideo.isPlaying) {
+                        PlayingVideoFab(
+                            posterUrl = activeVideo.posterUrl,
+                            onClick = { viewModel.downloadPlayingVideo() },
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(end = 16.dp, bottom = 96.dp)
                         )
                     }
                     if (isScreenRecording) {

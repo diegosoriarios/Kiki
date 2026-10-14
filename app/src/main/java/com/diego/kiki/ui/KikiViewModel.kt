@@ -610,6 +610,20 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
         _isMediaSheetVisible.value = false
     }
 
+    fun downloadPlayingVideo() {
+        val activeVideo = getActiveVideoForCurrentTab() ?: return
+        
+        when (activeVideo.type) {
+            "HLS" -> mediaController.downloadHlsStream(
+                playlistUrl = activeVideo.url,
+                qualityLabel = null,
+                thumbnailUrl = activeVideo.posterUrl
+            )
+            "BLOB" -> mediaController.downloadBlob(activeVideo.url, activeVideo)
+            else -> mediaController.downloadMediaCandidate(activeVideo)
+        }
+    }
+
     fun downloadMediaCandidate(candidate: MediaCandidate) = mediaController.downloadMediaCandidate(candidate)
 
     fun downloadHlsStream(
