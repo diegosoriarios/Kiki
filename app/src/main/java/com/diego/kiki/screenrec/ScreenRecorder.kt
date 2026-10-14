@@ -189,8 +189,26 @@ object ScreenRecorder {
                 outWidth.toFloat() / view.width,
                 outHeight.toFloat() / view.height
             )
-            canvas.scale(scale, scale)
-            view.draw(canvas)
+            
+            // For WebView: capture only the visible viewport, not entire scrollable content
+            if (view is WebView) {
+                val scrollY = view.scrollY
+                val scrollX = view.scrollX
+                
+                canvas.save()
+                canvas.scale(scale, scale)
+                // Translate to capture only the visible area
+                canvas.translate(-scrollX.toFloat(), -scrollY.toFloat())
+                // Clip to the visible viewport
+                canvas.clipRect(scrollX, scrollY, scrollX + view.width, scrollY + view.height)
+                view.draw(canvas)
+                canvas.restore()
+            } else {
+                // For other views: use existing logic
+                canvas.scale(scale, scale)
+                view.draw(canvas)
+            }
+            
             true
         } catch (_: Throwable) {
             false
