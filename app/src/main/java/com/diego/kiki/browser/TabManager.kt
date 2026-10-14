@@ -16,6 +16,7 @@ import com.diego.kiki.download.DownloadRequest
 import com.diego.kiki.download.DownloadStorage
 import com.diego.kiki.download.MediaCandidate
 import com.diego.kiki.download.MediaSniffer
+import com.diego.kiki.download.MediaTypes
 import com.diego.kiki.download.SegmentCandidateRegistry
 import com.diego.kiki.engine.EngineClient
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -433,19 +434,17 @@ class TabManager(
                 byUrl[candidate.url] = if (previous == null) {
                     candidate.copy(lastSeenAt = now)
                 } else {
-                    // Re-observation refreshes recency and fills in richer metadata
                     previous.copy(
                         lastSeenAt = now,
                         posterUrl = candidate.posterUrl ?: previous.posterUrl,
                         width = candidate.width.takeIf { it > 0 } ?: previous.width,
-                        height = candidate.height.takeIf { it > 0 } ?: previous.height
+                        height = candidate.height.takeIf { it > 0 } ?: previous.height,
+                        isPlaying = candidate.isPlaying,
+                        currentTime = candidate.currentTime.takeIf { it > 0 } ?: previous.currentTime
                     )
                 }
             }
-            // Newest-first so the video the user just opened is always on top
             var merged = byUrl.values.sortedByDescending { it.lastSeenAt }
-            // Players revoke blob: URLs as the user picks new episodes — evict
-            // the oldest so stale look-alike rows don't pile up
             val blobs = merged.filter { it.url.startsWith("blob:") }
             if (blobs.size > MAX_BLOB_CANDIDATES_PER_TAB) {
                 val evict = blobs.asSequence()
@@ -539,6 +538,14 @@ class TabManager(
             tab.webView?.evaluateJavascript(MediaSniffer.INJECT_JS, null)
             tab.webView?.evaluateJavascript(MediaSniffer.HOOKS_JS, null)
         }
+    }
+
+    /** Returns the currently playing video for the given tab, or the most recently seen video. */
+    fun getActiveVideoForTab(tabId: String): MediaCandidate? {
+        val candidates = _mediaCandidates.value[tabId] ?: return null
+        return candidates.firstOrNull { it.isPlaying }
+            ?: candidates.firstOrNull { it.currentTime > 0 }
+            ?: candidates.firstOrNull { it.type == MediaTypes.VIDEO || it.type == MediaTypes.HLS || it.type == MediaTypes.BLOB }
     }
 
     override fun onProgressChanged(tabId: String, progress: Int) {

@@ -377,6 +377,11 @@ fun BrowserScreen(
                 candidates = mediaCandidates[activeTabId].orEmpty(),
                 capture = viewModel.mediaCaptureForActiveTab(),
                 variantQuality = variantQuality,
+                activeVideo = viewModel.getActiveVideoForCurrentTab(),
+                allMediaByTab = viewModel.getAllMediaCandidates(),
+                allCapturesByTab = viewModel.getAllCaptures(),
+                allVariantQualitiesByTab = viewModel.getAllVariantQualities(),
+                tabDisplayInfo = viewModel.getTabDisplayInfo(),
                 onDownload = { candidate -> viewModel.downloadMediaCandidate(candidate) },
                 onDownloadHls = { url, quality, poster ->
                     viewModel.downloadHlsStream(url, quality, poster)
@@ -385,6 +390,7 @@ fun BrowserScreen(
                     viewModel.hideMediaSheet()
                     viewModel.showBulkSheet()
                 },
+                onDownloadAll = { viewModel.downloadAllVideos() },
                 onDismiss = { viewModel.hideMediaSheet() }
             )
         }

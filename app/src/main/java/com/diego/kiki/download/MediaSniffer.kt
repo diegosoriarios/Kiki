@@ -92,6 +92,8 @@ class MediaSniffer(
                     ?.takeIf { it !is JsonNull }?.content
                 val width = (obj[KEY_WIDTH] as? JsonPrimitive)?.content?.toIntOrNull() ?: 0
                 val height = (obj[KEY_HEIGHT] as? JsonPrimitive)?.content?.toIntOrNull() ?: 0
+                val isPlaying = (obj[KEY_PLAYING] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false
+                val currentTime = (obj[KEY_CURRENT_TIME] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 0.0
                 if (!url.startsWith("http") && !url.startsWith("blob:")) return@mapNotNull null
                 MediaCandidate(
                     url = url,
@@ -99,7 +101,9 @@ class MediaSniffer(
                     sourceTag = tag,
                     posterUrl = poster,
                     width = width,
-                    height = height
+                    height = height,
+                    isPlaying = isPlaying,
+                    currentTime = currentTime
                 )
             }
         } catch (_: Exception) {
@@ -116,6 +120,8 @@ class MediaSniffer(
         private const val KEY_POSTER = "poster"
         private const val KEY_WIDTH = "w"
         private const val KEY_HEIGHT = "h"
+        private const val KEY_PLAYING = "playing"
+        private const val KEY_CURRENT_TIME = "currentTime"
 
         /**
          * Installed once per document: hooks XHR/fetch to detect playlist responses
@@ -233,8 +239,21 @@ class MediaSniffer(
                             }
                             if (meta.w > 0) item.w = meta.w;
                             if (meta.h > 0) item.h = meta.h;
+                            if (meta.playing !== undefined) item.playing = meta.playing;
+                            if (meta.currentTime > 0) item.currentTime = meta.currentTime;
                         }
                         results.push(item);
+                    }
+                    var metaPoster = null;
+                    var ogImage = document.querySelector('meta[property="og:image"]');
+                    if (ogImage) {
+                        metaPoster = ogImage.getAttribute('content');
+                    }
+                    if (!metaPoster) {
+                        var twitterImage = document.querySelector('meta[name="twitter:image"]');
+                        if (twitterImage) {
+                            metaPoster = twitterImage.getAttribute('content');
+                        }
                     }
                     var nodes = document.querySelectorAll('video,audio,source,a[href]');
                     for (var i = 0; i < nodes.length; i++) {
@@ -247,10 +266,14 @@ class MediaSniffer(
                                 if (/^blob:/i.test(src)) kind = 'BLOB';
                                 else if (hlsExt.test(src)) kind = 'HLS';
                                 else if (dashExt.test(src)) kind = 'DASH';
+                                var posterAttr = tag === 'video' ? el.getAttribute('poster') : null;
+                                var isPlaying = !!(el.currentTime > 0 && !el.paused && !el.ended && el.readyState > 2);
                                 add(src, kind, tag, {
-                                    poster: tag === 'video' ? el.getAttribute('poster') : null,
+                                    poster: posterAttr || metaPoster,
                                     w: el.videoWidth || 0,
-                                    h: el.videoHeight || 0
+                                    h: el.videoHeight || 0,
+                                    playing: isPlaying,
+                                    currentTime: el.currentTime || 0
                                 });
                             }
                         } else if (tag === 'source') {

@@ -47,6 +47,13 @@ data class MediaContextMenuState(
     val url: String
 )
 
+data class TabDisplayInfo(
+    val tabId: String,
+    val title: String,
+    val url: String,
+    val mediaCount: Int
+)
+
 /**
  * Thin orchestration root: owns the tab manager, app-level UI visibility
  * state and preferences; feature logic lives in the controllers
@@ -541,6 +548,49 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun mediaCaptureForActiveTab(): SegmentCandidateRegistry.TabMediaCapture {
         return tabManager.segmentRegistry.captureFor(activeTabId.value)
+    }
+
+    fun getAllMediaCandidates(): Map<String, List<MediaCandidate>> {
+        return tabManager.mediaCandidates.value
+    }
+
+    fun getAllCaptures(): Map<String, SegmentCandidateRegistry.TabMediaCapture> {
+        return tabManager.tabs.value.associate { tab ->
+            tab.id to tabManager.segmentRegistry.captureFor(tab.id)
+        }
+    }
+
+    fun getAllVariantQualities(): Map<String, Map<String, List<com.diego.kiki.download.VariantQuality>>> {
+        return mediaController.getAllStreamQualities()
+    }
+
+    fun getTabDisplayInfo(): List<TabDisplayInfo> {
+        val allMedia = tabManager.mediaCandidates.value
+        return tabManager.tabs.value.map { tab ->
+            val mediaCount = (allMedia[tab.id]?.size ?: 0) +
+                    (tabManager.segmentRegistry.captureFor(tab.id).let { 
+                        it.streamGroups.size + it.mediaGroups.size + it.segmentGroups.size 
+                    })
+            TabDisplayInfo(
+                tabId = tab.id,
+                title = tab.title.ifBlank { tab.url },
+                url = tab.url,
+                mediaCount = mediaCount
+            )
+        }.filter { it.mediaCount > 0 }
+    }
+
+    fun getActiveVideoForCurrentTab(): MediaCandidate? {
+        return tabManager.getActiveVideoForTab(activeTabId.value)
+    }
+
+    fun downloadAllVideos() {
+        mediaController.downloadAllVideos(
+            getAllMediaCandidates(),
+            getAllCaptures(),
+            getAllVariantQualities()
+        )
+        _isMediaSheetVisible.value = false
     }
 
     fun downloadMediaCandidate(candidate: MediaCandidate) = mediaController.downloadMediaCandidate(candidate)

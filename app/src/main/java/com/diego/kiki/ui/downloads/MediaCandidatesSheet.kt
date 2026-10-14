@@ -11,24 +11,30 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Stream
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,6 +53,7 @@ import com.diego.kiki.download.MediaTypes
 import com.diego.kiki.download.SegmentCandidateRegistry
 import com.diego.kiki.download.VariantQuality
 import com.diego.kiki.download.MediaNaming.qualityLabelFor
+import com.diego.kiki.ui.TabDisplayInfo
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,17 +61,74 @@ fun MediaCandidatesSheet(
     candidates: List<MediaCandidate>,
     capture: SegmentCandidateRegistry.TabMediaCapture,
     variantQuality: Map<String, List<VariantQuality>> = emptyMap(),
+    activeVideo: MediaCandidate? = null,
+    allMediaByTab: Map<String, List<MediaCandidate>> = emptyMap(),
+    allCapturesByTab: Map<String, SegmentCandidateRegistry.TabMediaCapture> = emptyMap(),
+    allVariantQualitiesByTab: Map<String, Map<String, List<VariantQuality>>> = emptyMap(),
+    tabDisplayInfo: List<TabDisplayInfo> = emptyList(),
     onDownload: (MediaCandidate) -> Unit,
     onDownloadHls: (url: String, qualityLabel: String?, posterUrl: String?) -> Unit,
     onOpenBulk: () -> Unit,
+    onDownloadAll: () -> Unit,
     onDismiss: () -> Unit
+) {
+    var selectedTab by remember { mutableStateOf(0) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column {
+            ScrollableTabRow(selectedTabIndex = selectedTab) {
+                Tab(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    text = { Text("Current Page") },
+                    icon = { Icon(Icons.Default.Visibility, contentDescription = null) }
+                )
+                Tab(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    text = { Text("All Videos") },
+                    icon = { Icon(Icons.Default.Download, contentDescription = null) }
+                )
+            }
+
+            when (selectedTab) {
+                0 -> CurrentPageTab(
+                    candidates = candidates,
+                    capture = capture,
+                    variantQuality = variantQuality,
+                    activeVideo = activeVideo,
+                    onDownload = onDownload,
+                    onDownloadHls = onDownloadHls,
+                    onOpenBulk = onOpenBulk
+                )
+                1 -> AllVideosTab(
+                    tabDisplayInfo = tabDisplayInfo,
+                    allMediaByTab = allMediaByTab,
+                    allCapturesByTab = allCapturesByTab,
+                    allVariantQualitiesByTab = allVariantQualitiesByTab,
+                    onDownload = onDownload,
+                    onDownloadHls = onDownloadHls,
+                    onDownloadAll = onDownloadAll
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CurrentPageTab(
+    candidates: List<MediaCandidate>,
+    capture: SegmentCandidateRegistry.TabMediaCapture,
+    variantQuality: Map<String, List<VariantQuality>>,
+    activeVideo: MediaCandidate?,
+    onDownload: (MediaCandidate) -> Unit,
+    onDownloadHls: (url: String, qualityLabel: String?, posterUrl: String?) -> Unit,
+    onOpenBulk: () -> Unit
 ) {
     val playlistUrls = capture.playlists.map { it.url }.toSet()
     val streamHosts = capture.streamGroups.map { it.host }.toSet()
     val fileGroups = groupFileCandidates(candidates, playlistUrls)
     val fileUrls = fileGroups.map { it.best.url }.toSet()
-    // A URL seen by both the DOM and the network layer renders once (file row
-    // carries richer metadata), so the media-request copy is dropped
     val mediaGroups = capture.mediaGroups.filter { it.url !in fileUrls }
     val standaloneSegments = capture.segmentGroups.filter { it.host !in streamHosts }
     val hasAnyContent = candidates.isNotEmpty() || !capture.isEmpty
@@ -72,7 +136,18 @@ fun MediaCandidatesSheet(
         .filter { !it.posterUrl.isNullOrEmpty() }
         .associate { it.url to it.posterUrl!! }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    val listState = rememberLazyListState()
+    val activeVideoIndex = remember(activeVideo, candidates) {
+        candidates.indexOfFirst { it.url == activeVideo?.url }
+    }
+
+    LaunchedEffect(activeVideoIndex) {
+        if (activeVideoIndex >= 0) {
+            listState.animateScrollToItem(activeVideoIndex)
+        }
+    }
+
+    Column {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
@@ -106,9 +181,10 @@ fun MediaCandidatesSheet(
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)
             )
         } else {
-            LazyColumn(modifier = Modifier.padding(bottom = 24.dp)) {
-
-                // 1. Streams — one row per stream, expandable quality picker
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.padding(bottom = 24.dp)
+            ) {
                 if (capture.streamGroups.isNotEmpty()) {
                     item(key = "streams_header") {
                         SectionHeader("Streams — saved as MP4")
@@ -123,19 +199,20 @@ fun MediaCandidatesSheet(
                     }
                 }
 
-                // 2. Files found in the page (videos, audio, blobs, collapsed images)
                 if (fileGroups.isNotEmpty()) {
                     item(key = "files_header") {
                         SectionHeader("Files on the page")
                     }
                     items(fileGroups, key = { "file_" + it.best.url }) { group ->
                         val savableHls = group.kind == MediaTypes.HLS
+                        val isActive = group.best.url == activeVideo?.url
                         CandidateRow(
                             title = group.title,
                             detail = group.detail,
                             icon = group.icon,
                             posterUrl = group.posterUrl,
                             badge = group.badge,
+                            isActive = isActive,
                             onClick = {
                                 if (savableHls) {
                                     onDownloadHls(group.best.url, group.badge, group.posterUrl)
@@ -148,7 +225,6 @@ fun MediaCandidatesSheet(
                     }
                 }
 
-                // 3. Direct media requests — one distinct URL per row
                 if (mediaGroups.isNotEmpty()) {
                     item(key = "media_header") {
                         SectionHeader("Media requests")
@@ -167,7 +243,6 @@ fun MediaCandidatesSheet(
                     }
                 }
 
-                // 4. Segment traffic on hosts where no playlist was captured
                 if (standaloneSegments.isNotEmpty()) {
                     item(key = "segments_header") {
                         SectionHeader("Segments — needs replay to save")
@@ -180,6 +255,108 @@ fun MediaCandidatesSheet(
                             onClick = null,
                             enabled = false
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AllVideosTab(
+    tabDisplayInfo: List<TabDisplayInfo>,
+    allMediaByTab: Map<String, List<MediaCandidate>>,
+    allCapturesByTab: Map<String, SegmentCandidateRegistry.TabMediaCapture>,
+    allVariantQualitiesByTab: Map<String, Map<String, List<VariantQuality>>>,
+    onDownload: (MediaCandidate) -> Unit,
+    onDownloadHls: (url: String, qualityLabel: String?, posterUrl: String?) -> Unit,
+    onDownloadAll: () -> Unit
+) {
+    val totalVideos = tabDisplayInfo.sumOf { it.mediaCount }
+    val hasAnyContent = tabDisplayInfo.isNotEmpty()
+
+    Column {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "All Videos",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                if (hasAnyContent) {
+                    Text(
+                        text = "$totalVideos videos · ${tabDisplayInfo.size} tabs",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+            }
+            if (hasAnyContent) {
+                TextButton(onClick = onDownloadAll) {
+                    Text("Download All")
+                }
+            }
+        }
+
+        if (!hasAnyContent) {
+            Text(
+                text = "No videos detected across all tabs.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)
+            )
+        } else {
+            LazyColumn(modifier = Modifier.padding(bottom = 24.dp)) {
+                tabDisplayInfo.forEach { tabInfo ->
+                    item(key = "tab_header_${tabInfo.tabId}") {
+                        TabHeader(tabInfo.title, tabInfo.mediaCount)
+                    }
+
+                    val tabCandidates = allMediaByTab[tabInfo.tabId].orEmpty()
+                    val tabCapture = allCapturesByTab[tabInfo.tabId]
+                    val tabVariants = allVariantQualitiesByTab[tabInfo.tabId] ?: emptyMap()
+
+                    if (tabCapture != null) {
+                        val playlistUrls = tabCapture.playlists.map { it.url }.toSet()
+                        val fileGroups = groupFileCandidates(tabCandidates, playlistUrls)
+                        val posterByUrl = tabCandidates
+                            .filter { !it.posterUrl.isNullOrEmpty() }
+                            .associate { it.url to it.posterUrl!! }
+
+                        if (tabCapture.streamGroups.isNotEmpty()) {
+                            items(tabCapture.streamGroups, key = { "stream_${tabInfo.tabId}_" + it.best.url }) { group ->
+                                StreamRow(
+                                    group = group,
+                                    parsed = tabVariants[group.best.url].orEmpty(),
+                                    posterUrl = streamPoster(posterByUrl, group),
+                                    onDownloadHls = onDownloadHls
+                                )
+                            }
+                        }
+
+                        if (fileGroups.isNotEmpty()) {
+                            items(fileGroups, key = { "file_${tabInfo.tabId}_" + it.best.url }) { group ->
+                                val savableHls = group.kind == MediaTypes.HLS
+                                CandidateRow(
+                                    title = group.title,
+                                    detail = group.detail,
+                                    icon = group.icon,
+                                    posterUrl = group.posterUrl,
+                                    badge = group.badge,
+                                    onClick = {
+                                        if (savableHls) {
+                                            onDownloadHls(group.best.url, group.badge, group.posterUrl)
+                                        } else {
+                                            onDownload(group.best)
+                                        }
+                                    },
+                                    enabled = group.enabled
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -504,6 +681,40 @@ private fun SectionHeader(title: String) {
     )
 }
 
+@Composable
+private fun TabHeader(title: String, mediaCount: Int) {
+    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
+    ) {
+        Icon(
+            imageVector = Icons.Default.Description,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Spacer(modifier = Modifier.size(8.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = "$mediaCount",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                .padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+    }
+}
+
 /** Poster thumbnail with a type-icon fallback. */
 @Composable
 private fun MediaThumb(
@@ -522,7 +733,8 @@ private fun CandidateRow(
     onClick: (() -> Unit)?,
     enabled: Boolean = true,
     posterUrl: String? = null,
-    badge: String? = null
+    badge: String? = null,
+    isActive: Boolean = false
 ) {
     val alpha = if (enabled) 1f else 0.5f
     Row(
@@ -536,19 +748,38 @@ private fun CandidateRow(
                     Modifier
                 }
             )
+            .then(
+                if (isActive) {
+                    Modifier.background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f))
+                } else {
+                    Modifier
+                }
+            )
             .padding(horizontal = 20.dp, vertical = 10.dp)
     ) {
         MediaThumb(posterUrl = posterUrl, icon = icon, enabled = enabled)
         Spacer(modifier = Modifier.size(12.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (isActive) {
+                    Spacer(modifier = Modifier.size(6.dp))
+                    Text(
+                        text = "PLAYING",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
             Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = detail,

@@ -32,7 +32,11 @@ data class MediaCandidate(
     val width: Int = 0,
     val height: Int = 0,
     /** Last time this URL was observed — drives newest-first ordering. */
-    val lastSeenAt: Long = 0L
+    val lastSeenAt: Long = 0L,
+    /** Whether this video is currently playing. */
+    val isPlaying: Boolean = false,
+    /** Current playback position in seconds. */
+    val currentTime: Double = 0.0
 )
 
 /** One row in the bulk-download checklist. */

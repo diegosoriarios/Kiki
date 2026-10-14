@@ -79,6 +79,10 @@ class MediaDownloadController(
         }
     }
 
+    fun getAllStreamQualities(): Map<String, Map<String, List<VariantQuality>>> {
+        return mapOf(activeTabId.value to variantQualityCache.toMap())
+    }
+
     /** Fetches + parses a master playlist; empty list on any failure. */
     private suspend fun fetchVariantQuality(masterUrl: String): List<VariantQuality> =
         withContext(Dispatchers.IO) {
@@ -322,6 +326,157 @@ class MediaDownloadController(
             },
             Toast.LENGTH_LONG
         ).show()
+    }
+
+    fun downloadAllVideos(
+        allCandidates: Map<String, List<MediaCandidate>>,
+        allCaptures: Map<String, com.diego.kiki.download.SegmentCandidateRegistry.TabMediaCapture>,
+        allVariantQualities: Map<String, Map<String, List<VariantQuality>>>
+    ) {
+        if (allCandidates.isEmpty() && allCaptures.isEmpty()) return
+        
+        var started = 0
+        var blobs = 0
+        
+        allCandidates.forEach { (tabId, candidates) ->
+            val capture = allCaptures[tabId] ?: return@forEach
+            val bulkItems = BulkItemsBuilder.build(capture, candidates)
+            
+            bulkItems.forEach { item ->
+                val candidate = candidates.find { it.url == item.url }
+                val poster = candidate?.posterUrl
+                val quality = MediaNaming.qualityLabel(candidate?.height ?: 0)
+                    ?: allVariantQualities[tabId]?.get(item.url)?.firstOrNull()?.let {
+                        MediaNaming.qualityLabelFor(it.resolution, it.bandwidth)
+                    }
+                val host = MediaNaming.shortHost(item.url).ifBlank { null }
+                
+                when (item.type) {
+                    MediaTypes.HLS -> {
+                        startHlsDownloadForTab(tabId, item.url, quality, poster, showToast = false)
+                        started++
+                    }
+                    MediaTypes.BLOB -> {
+                        if (startBlobDownloadForTab(tabId, item.url, poster, quality) != null) {
+                            blobs++
+                            started++
+                        }
+                    }
+                    MediaTypes.DASH -> Unit
+                    else -> {
+                        startMediaDownloadForTab(tabId, item.url, poster, quality, host, showToast = false)
+                        started++
+                    }
+                }
+            }
+        }
+        
+        Toast.makeText(
+            context,
+            if (blobs > 0) {
+                "$started downloads started — keep pages open until blob videos finish"
+            } else {
+                "$started downloads started"
+            },
+            Toast.LENGTH_LONG
+        ).show()
+    }
+    
+    private fun startHlsDownloadForTab(
+        tabId: String,
+        playlistUrl: String,
+        qualityLabel: String? = null,
+        thumbnailUrl: String? = null,
+        showToast: Boolean
+    ) {
+        val tab = tabManager.tabs.value.find { it.id == tabId }
+        val headers = DownloadRequest.pageHeaders(
+            pageUrl = tab?.url,
+            targetUrl = playlistUrl,
+            userAgent = tab?.webView?.settings?.userAgentString
+        )
+        val base = MediaNaming.smartBaseName(playlistUrl).ifBlank {
+            "video-${MediaNaming.shortHost(playlistUrl).ifBlank { "stream" }}-${System.currentTimeMillis() / 1000}"
+        }
+        val fileName = DownloadStorage.sanitizeFileName(base) + ".mp4"
+        coordinator.enqueueHls(
+            url = playlistUrl,
+            headers = headers,
+            fileName = fileName,
+            thumbnailUrl = thumbnailUrl,
+            qualityLabel = qualityLabel,
+            sourceHost = MediaNaming.shortHost(playlistUrl)
+        )
+        if (showToast) {
+            Toast.makeText(context, "Stream download started", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    private fun startBlobDownloadForTab(
+        tabId: String,
+        blobUrl: String,
+        thumbnailUrl: String? = null,
+        qualityLabel: String? = null
+    ): String? {
+        val tab = tabManager.tabs.value.find { it.id == tabId } ?: return null
+        val headers = DownloadRequest.pageHeaders(
+            pageUrl = tab.url,
+            targetUrl = tab.url ?: blobUrl
+        )
+        val host = try {
+            android.net.Uri.parse(tab.url).host
+        } catch (_: Exception) {
+            null
+        } ?: "video"
+        val fileName = DownloadStorage.sanitizeFileName("video-$host-${System.currentTimeMillis() / 1000}") + ".mp4"
+        val id = coordinator.enqueueBlob(
+            blobUrl = blobUrl,
+            tabId = tabId,
+            headers = headers,
+            fileName = fileName,
+            thumbnailUrl = thumbnailUrl,
+            qualityLabel = qualityLabel,
+            sourceHost = MediaNaming.shortHost(tab.url ?: "").ifBlank { null }
+        )
+        injectBlobFetch(id, blobUrl, tabId)
+        return id
+    }
+    
+    private fun startMediaDownloadForTab(
+        tabId: String,
+        url: String,
+        thumbnailUrl: String? = null,
+        qualityLabel: String? = null,
+        sourceHost: String? = null,
+        showToast: Boolean = true
+    ) {
+        val tab = tabManager.tabs.value.find { it.id == tabId }
+        val headers = DownloadRequest.pageHeaders(
+            pageUrl = tab?.url,
+            targetUrl = url,
+            userAgent = tab?.webView?.settings?.userAgentString
+        )
+        var fileName = DownloadStorage.fileNameFromHeaders(url, null, null)
+        val nameBase = fileName.substringBeforeLast('.')
+        if (MediaNaming.isGenericToken(nameBase)) {
+            val host = MediaNaming.shortHost(url).ifBlank { "media" }
+            val ext = DownloadStorage.fileExtensionOf(fileName).ifBlank { "mp4" }
+            fileName = DownloadStorage.sanitizeFileName("$host-$nameBase") + ".$ext"
+        }
+        coordinator.enqueue(
+            DownloadRequest(
+                url = url,
+                headers = headers,
+                fileName = fileName,
+                mimeType = null,
+                thumbnailUrl = thumbnailUrl,
+                qualityLabel = qualityLabel,
+                sourceHost = sourceHost ?: MediaNaming.shortHost(url).ifBlank { null }
+            )
+        )
+        if (showToast) {
+            Toast.makeText(context, "Download started", Toast.LENGTH_SHORT).show()
+        }
     }
 
     /**
