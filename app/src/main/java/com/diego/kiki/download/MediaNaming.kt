@@ -72,6 +72,38 @@ object MediaNaming {
         return if (host.isNotBlank()) host else fallback
     }
 
+    /**
+     * Display title for a stream with quality info: uses smart base name,
+     * falls back to page title if provided, then to host.
+     * Includes quality count in the title for better differentiation.
+     */
+    fun streamDisplayTitle(
+        url: String,
+        pageTitle: String? = null,
+        qualityCount: Int = 0,
+        bestQuality: String? = null,
+        fallback: String = "Stream"
+    ): String {
+        val base = smartBaseName(url)
+        val name = when {
+            base.isNotBlank() && !isGenericToken(base) -> base
+            !pageTitle.isNullOrBlank() -> pageTitle.take(40)
+            else -> {
+                val host = shortHost(url)
+                if (host.isNotBlank()) host else fallback
+            }
+        }
+        
+        val parts = mutableListOf(name)
+        if (bestQuality != null) {
+            parts.add(bestQuality)
+        } else if (qualityCount > 1) {
+            parts.add("$qualityCount qualities")
+        }
+        
+        return parts.joinToString(" · ")
+    }
+
     /** True when the base name carries no episode/content information. */
     fun isGenericToken(token: String): Boolean {
         val clean = token.lowercase()

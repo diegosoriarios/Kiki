@@ -62,6 +62,7 @@ fun MediaCandidatesSheet(
     capture: SegmentCandidateRegistry.TabMediaCapture,
     variantQuality: Map<String, List<VariantQuality>> = emptyMap(),
     activeVideo: MediaCandidate? = null,
+    pageTitle: String? = null,
     allMediaByTab: Map<String, List<MediaCandidate>> = emptyMap(),
     allCapturesByTab: Map<String, SegmentCandidateRegistry.TabMediaCapture> = emptyMap(),
     allVariantQualitiesByTab: Map<String, Map<String, List<VariantQuality>>> = emptyMap(),
@@ -97,6 +98,7 @@ fun MediaCandidatesSheet(
                     capture = capture,
                     variantQuality = variantQuality,
                     activeVideo = activeVideo,
+                    pageTitle = pageTitle,
                     onDownload = onDownload,
                     onDownloadHls = onDownloadHls,
                     onOpenBulk = onOpenBulk
@@ -121,6 +123,7 @@ private fun CurrentPageTab(
     capture: SegmentCandidateRegistry.TabMediaCapture,
     variantQuality: Map<String, List<VariantQuality>>,
     activeVideo: MediaCandidate?,
+    pageTitle: String?,
     onDownload: (MediaCandidate) -> Unit,
     onDownloadHls: (url: String, qualityLabel: String?, posterUrl: String?) -> Unit,
     onOpenBulk: () -> Unit
@@ -190,10 +193,13 @@ private fun CurrentPageTab(
                         SectionHeader("Streams — saved as MP4")
                     }
                     items(capture.streamGroups, key = { "stream_" + it.best.url }) { group ->
+                        val isActive = isStreamActive(group, activeVideo)
                         StreamRow(
                             group = group,
                             parsed = variantQuality[group.best.url].orEmpty(),
-                            posterUrl = streamPoster(posterByUrl, group),
+                            posterUrl = streamPoster(posterByUrl, group, activeVideo),
+                            isActive = isActive,
+                            pageTitle = pageTitle,
                             onDownloadHls = onDownloadHls
                         )
                     }
@@ -332,6 +338,7 @@ private fun AllVideosTab(
                                     group = group,
                                     parsed = tabVariants[group.best.url].orEmpty(),
                                     posterUrl = streamPoster(posterByUrl, group),
+                                    isActive = false,
                                     onDownloadHls = onDownloadHls
                                 )
                             }
@@ -370,6 +377,8 @@ private fun StreamRow(
     group: SegmentCandidateRegistry.StreamGroup,
     parsed: List<VariantQuality>,
     posterUrl: String?,
+    isActive: Boolean = false,
+    pageTitle: String? = null,
     onDownloadHls: (url: String, qualityLabel: String?, posterUrl: String?) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -383,7 +392,17 @@ private fun StreamRow(
     val multi = variantRows.size > 1
     val alpha = if (savable) 1f else 0.5f
 
-    Column(modifier = Modifier.fillMaxWidth()) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (isActive) {
+                    Modifier.background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f))
+                } else {
+                    Modifier
+                }
+            )
+    ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -402,14 +421,31 @@ private fun StreamRow(
             )
             Spacer(modifier = Modifier.size(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = MediaNaming.displayTitle(group.best.url, fallback = "Stream"),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = MediaNaming.streamDisplayTitle(
+                            url = group.best.url,
+                            pageTitle = pageTitle,
+                            qualityCount = variantRows.size,
+                            bestQuality = bestQualityText
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (isActive) {
+                        Spacer(modifier = Modifier.size(6.dp))
+                        Text(
+                            text = "PLAYING",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = streamLabel(group, variantRows.size, bestQualityText),
@@ -536,10 +572,49 @@ private fun streamLabel(group: SegmentCandidateRegistry.StreamGroup, qualityCoun
 
 private fun streamPoster(
     posterByUrl: Map<String, String>,
-    group: SegmentCandidateRegistry.StreamGroup
+    group: SegmentCandidateRegistry.StreamGroup,
+    activeVideo: MediaCandidate? = null
 ): String? {
+    // 1. Check if active video matches this stream (URL prefix match)
+    if (activeVideo != null && activeVideo.posterUrl != null) {
+        if (urlsMatch(activeVideo.url, group.best.url)) {
+            return activeVideo.posterUrl
+        }
+        for (variant in group.variants) {
+            if (urlsMatch(activeVideo.url, variant.url)) {
+                return activeVideo.posterUrl
+            }
+        }
+    }
+    // 2. Check direct URL match in poster map
     posterByUrl[group.best.url]?.let { return it }
-    return group.variants.firstNotNullOfOrNull { posterByUrl[it.url] }
+    // 3. Check variant URLs
+    val variantPoster = group.variants.firstNotNullOfOrNull { posterByUrl[it.url] }
+    if (variantPoster != null) return variantPoster
+    // 4. Fall back to any poster from active video
+    if (activeVideo?.posterUrl != null) {
+        return activeVideo.posterUrl
+    }
+    return null
+}
+
+/** Check if a stream group matches the currently playing video. */
+private fun isStreamActive(
+    group: SegmentCandidateRegistry.StreamGroup,
+    activeVideo: MediaCandidate?
+): Boolean {
+    if (activeVideo == null) return false
+    // Check if active video's URL matches stream's best URL
+    if (urlsMatch(activeVideo.url, group.best.url)) return true
+    // Check if active video's URL matches any variant URL
+    return group.variants.any { urlsMatch(activeVideo.url, it.url) }
+}
+
+/** Compare URLs ignoring query parameters (handles token differences). */
+private fun urlsMatch(url1: String, url2: String): Boolean {
+    val base1 = url1.substringBefore('?').substringBefore('#')
+    val base2 = url2.substringBefore('?').substringBefore('#')
+    return base1 == base2
 }
 
 // File groups (videos/audio/blobs single rows; same-stem images collapsed) ------

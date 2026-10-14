@@ -396,6 +396,7 @@ fun BrowserScreen(
                 capture = viewModel.mediaCaptureForActiveTab(),
                 variantQuality = variantQuality,
                 activeVideo = viewModel.getActiveVideoForCurrentTab(),
+                pageTitle = activeTab?.title,
                 allMediaByTab = viewModel.getAllMediaCandidates(),
                 allCapturesByTab = viewModel.getAllCaptures(),
                 allVariantQualitiesByTab = viewModel.getAllVariantQualities(),
