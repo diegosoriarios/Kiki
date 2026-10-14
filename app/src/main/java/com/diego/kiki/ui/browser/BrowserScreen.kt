@@ -5,10 +5,15 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -36,6 +41,7 @@ import com.diego.kiki.ui.downloads.BulkDownloadSheet
 import com.diego.kiki.ui.downloads.DownloadPill
 import com.diego.kiki.ui.downloads.DownloadsScreen
 import com.diego.kiki.ui.downloads.MediaCandidatesSheet
+import com.diego.kiki.ui.downloads.MediaThumbnail
 import com.diego.kiki.ui.history.HistoryScreen
 import com.diego.kiki.ui.settings.SettingsScreen
 import com.diego.kiki.ui.tabs.TabSwitcherScreen
@@ -399,19 +405,46 @@ fun BrowserScreen(
         mediaContextMenu?.let { contextState ->
             val isVideo = remember(contextState.url) {
                 Regex("\\.(mp4|webm|mkv|mov|avi|flv|mp3|m4a|ogg|wav)", RegexOption.IGNORE_CASE)
-                    .containsMatchIn(contextState.url)
+                    .containsMatchIn(contextState.url) ||
+                contextState.type in listOf("VIDEO", "HLS", "DASH", "BLOB")
             }
             val clipboard = LocalClipboardManager.current
             AlertDialog(
                 onDismissRequest = { viewModel.dismissMediaContextMenu() },
-                title = { Text(if (isVideo) "Download video?" else "Download image?") },
+                title = { Text(if (isVideo) "Download video?" else "Download media?") },
                 text = {
-                    Text(
-                        text = contextState.url,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Column {
+                        if (contextState.posterUrl != null) {
+                            MediaThumbnail(
+                                model = contextState.posterUrl,
+                                icon = Icons.Default.Videocam,
+                                size = 120.dp
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                        }
+                        if (contextState.isPlaying) {
+                            Text(
+                                text = "Currently playing",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                        }
+                        if (contextState.width > 0 && contextState.height > 0) {
+                            Text(
+                                text = "${contextState.width}x${contextState.height}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                        }
+                        Text(
+                            text = contextState.url,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 },
                 confirmButton = {
                     TextButton(onClick = { viewModel.downloadFromContextMenu() }) {

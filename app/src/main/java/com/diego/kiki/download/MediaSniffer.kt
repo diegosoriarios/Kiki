@@ -388,6 +388,70 @@ class MediaSniffer(
             """.trimIndent()
         }
 
+        /**
+         * Extracts video element info at the given coordinates (from long-press).
+         * Returns JSON with: url, poster, playing, currentTime, width, height, type
+         */
+        fun extractVideoInfoAtPointScript(x: Int, y: Int): String {
+            return """
+                (function() {
+                    try {
+                        var el = document.elementFromPoint($x, $y);
+                        if (!el) return null;
+                        
+                        function findVideo(element) {
+                            var current = element;
+                            while (current) {
+                                if (current.tagName === 'VIDEO' || current.tagName === 'AUDIO') {
+                                    return current;
+                                }
+                                if (current.shadowRoot) {
+                                    var shadowEl = current.shadowRoot.elementFromPoint($x, $y);
+                                    if (shadowEl && shadowEl !== current) {
+                                        current = shadowEl;
+                                        continue;
+                                    }
+                                }
+                                current = current.parentElement;
+                            }
+                            return null;
+                        }
+                        
+                        var video = findVideo(el);
+                        if (!video) return null;
+                        
+                        var src = video.currentSrc || video.src || video.getAttribute('src');
+                        if (!src) return null;
+                        
+                        var type = 'VIDEO';
+                        if (/^blob:/i.test(src)) type = 'BLOB';
+                        else if (/\.m3u8(\?|#|$)/i.test(src)) type = 'HLS';
+                        else if (/\.mpd(\?|#|$)/i.test(src)) type = 'DASH';
+                        
+                        var poster = video.tagName === 'VIDEO' ? video.getAttribute('poster') : null;
+                        if (!poster) {
+                            var ogImage = document.querySelector('meta[property="og:image"]');
+                            if (ogImage) poster = ogImage.getAttribute('content');
+                        }
+                        
+                        var isPlaying = !!(video.currentTime > 0 && !video.paused && !video.ended && video.readyState > 2);
+                        
+                        return JSON.stringify({
+                            url: src,
+                            poster: poster,
+                            playing: isPlaying,
+                            currentTime: video.currentTime || 0,
+                            width: video.videoWidth || 0,
+                            height: video.videoHeight || 0,
+                            type: type
+                        });
+                    } catch (e) {
+                        return null;
+                    }
+                })();
+            """.trimIndent()
+        }
+
         fun decodeBase64(base64: String): ByteArray =
             Base64.decode(base64, Base64.NO_WRAP or Base64.NO_PADDING)
 

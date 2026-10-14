@@ -23,6 +23,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 class TabManager(
     private val context: Context,
@@ -128,13 +131,62 @@ class TabManager(
                 ).Bridge(),
                 MediaSniffer.BRIDGE_NAME
             )
+            setOnTouchListener { v, event ->
+                when (event.action) {
+                    android.view.MotionEvent.ACTION_DOWN -> {
+                        v.tag = Pair(event.x.toInt(), event.y.toInt())
+                    }
+                }
+                false
+            }
             setOnLongClickListener {
-                val mediaUrl = extractLongPressMediaUrl(hitTestResult)
-                if (mediaUrl != null) {
-                    onMediaLongPressListener?.invoke(mediaUrl)
+                val coords = this.tag as? Pair<Int, Int>
+                if (coords != null) {
+                    val script = MediaSniffer.extractVideoInfoAtPointScript(coords.first, coords.second)
+                    this.evaluateJavascript(script) { result ->
+                        if (result != null && result != "null") {
+                            val jsonStr = result.trim('"').replace("\\\"", "\"")
+                            try {
+                                val json = kotlinx.serialization.json.Json.parseToJsonElement(jsonStr)
+                                val obj = json.jsonObject
+                                val url = obj["url"]?.jsonPrimitive?.content
+                                if (url != null) {
+                                    val poster = obj["poster"]?.jsonPrimitive?.content
+                                    val playing = obj["playing"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false
+                                    val currentTime = obj["currentTime"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: 0.0
+                                    val width = obj["width"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
+                                    val height = obj["height"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0
+                                    val type = obj["type"]?.jsonPrimitive?.content ?: "VIDEO"
+                                    
+                                    val candidate = MediaCandidate(
+                                        url = url,
+                                        type = type,
+                                        posterUrl = poster,
+                                        width = width,
+                                        height = height,
+                                        isPlaying = playing,
+                                        currentTime = currentTime
+                                    )
+                                    mergeMediaCandidates(tabId, listOf(candidate))
+                                    onMediaLongPressListener?.invoke(url)
+                                }
+                            } catch (_: Exception) {}
+                        } else {
+                            val mediaUrl = extractLongPressMediaUrl(hitTestResult)
+                            if (mediaUrl != null) {
+                                onMediaLongPressListener?.invoke(mediaUrl)
+                            }
+                        }
+                    }
                     true
                 } else {
-                    false
+                    val mediaUrl = extractLongPressMediaUrl(hitTestResult)
+                    if (mediaUrl != null) {
+                        onMediaLongPressListener?.invoke(mediaUrl)
+                        true
+                    } else {
+                        false
+                    }
                 }
             }
             setDownloadListener { url, _, contentDisposition, mimeType, _ ->

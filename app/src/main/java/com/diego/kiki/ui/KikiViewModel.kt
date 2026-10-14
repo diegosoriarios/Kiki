@@ -44,7 +44,13 @@ data class FullscreenVideoState(
 )
 
 data class MediaContextMenuState(
-    val url: String
+    val url: String,
+    val posterUrl: String? = null,
+    val isPlaying: Boolean = false,
+    val currentTime: Double = 0.0,
+    val width: Int = 0,
+    val height: Int = 0,
+    val type: String = "VIDEO"
 )
 
 data class TabDisplayInfo(
@@ -191,7 +197,18 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
             exitFullscreenVideo()
         }
         tabManager.onMediaLongPressListener = { url ->
-            _mediaContextMenu.value = MediaContextMenuState(url)
+            val activeTabId = tabManager.activeTabId.value
+            val candidates = tabManager.mediaCandidates.value[activeTabId] ?: emptyList()
+            val candidate = candidates.find { it.url == url }
+            _mediaContextMenu.value = MediaContextMenuState(
+                url = url,
+                posterUrl = candidate?.posterUrl,
+                isPlaying = candidate?.isPlaying ?: false,
+                currentTime = candidate?.currentTime ?: 0.0,
+                width = candidate?.width ?: 0,
+                height = candidate?.height ?: 0,
+                type = candidate?.type ?: "VIDEO"
+            )
         }
         tabManager.onBlobEventListener = { tabId, event ->
             downloadCoordinator.handleBlobEvent(tabId, event)
@@ -606,9 +623,28 @@ class KikiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun downloadFromContextMenu() {
-        val url = _mediaContextMenu.value?.url ?: return
+        val contextState = _mediaContextMenu.value ?: return
         _mediaContextMenu.value = null
-        mediaController.downloadUrl(url)
+        
+        val candidate = MediaCandidate(
+            url = contextState.url,
+            type = contextState.type,
+            posterUrl = contextState.posterUrl,
+            width = contextState.width,
+            height = contextState.height,
+            isPlaying = contextState.isPlaying,
+            currentTime = contextState.currentTime
+        )
+        
+        when (contextState.type) {
+            "HLS" -> mediaController.downloadHlsStream(
+                playlistUrl = contextState.url,
+                qualityLabel = null,
+                thumbnailUrl = contextState.posterUrl
+            )
+            "BLOB" -> mediaController.downloadBlob(candidate.url, candidate)
+            else -> mediaController.downloadMediaCandidate(candidate)
+        }
     }
 
     fun clearBrowsingData(
